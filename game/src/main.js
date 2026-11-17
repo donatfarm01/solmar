@@ -394,20 +394,27 @@ function stageShot(name) {
   state = newState();
   if (name === 'title') { screen = SCREEN_TITLE; }
   else if (name === 'driving') {
-    screen = SCREEN_PLAY; const c = state.cars[0]; state.cars.splice(0, 1); state.player.car = c; c.x = 1450; c.y = 250; c.angle = 0; c.speed = 260;
+    screen = SCREEN_PLAY; const c = state.cars[0]; state.cars.splice(0, 1); state.player.car = c;
+    c.x = 1200; c.y = 448; c.angle = 0; c.speed = 260; // on the east-west road, clear run
     state.player.x = c.x; state.player.y = c.y; startMission(state.mission, 0);
-    for (let i = 0; i < 30; i++) step(STEP);
+    for (let i = 0; i < 18; i++) step(STEP);
   } else if (name === 'wanted') {
     screen = SCREEN_PLAY; state.player.x = 1450; state.player.y = 550; state.wanted = 3; state.wantedHeat = 1;
-    state.cops.push({ x: 1500, y: 600, angle: 0, speed: 150, shirt: '#2b4acb', hp: 40 });
-    state.cars.push({ x: 1600, y: 500, angle: Math.PI, type: 1, speed: 200, driver: true, police: true, hp: 100 });
-    for (const p of state.peds) { p.x = 1450 + (Math.random() - 0.5) * 300; p.y = 550 + (Math.random() - 0.5) * 200; p.scared = 2; }
+    state.cops.push({ x: 1560, y: 640, angle: 0, speed: 150, shirt: '#2b4acb', hp: 40 });
+    state.cars.push({ x: 1650, y: 448, angle: Math.PI, type: 1, speed: 200, driver: true, police: true, hp: 100 });
+    // Scatter fleeing pedestrians in a ring around the player, not on top of them.
+    state.peds.forEach((p, i) => {
+      const a = (i / state.peds.length) * 6.283, r = 140 + (i % 5) * 55;
+      p.x = 1450 + Math.cos(a) * r; p.y = 550 + Math.sin(a) * r * 0.7; p.scared = 2;
+      p.fleeX = p.x + Math.cos(a) * 300; p.fleeY = p.y + Math.sin(a) * 300;
+    });
     for (let i = 0; i < 20; i++) step(STEP);
   } else if (name === 'mission') {
     screen = SCREEN_PLAY; startMission(state.mission, 4);
-    const c = state.cars[2]; state.cars.splice(2, 1); state.player.car = c; c.x = 2200; c.y = 350; c.angle = 0; c.speed = 200;
+    const c = state.cars[2]; state.cars.splice(2, 1); state.player.car = c;
+    c.x = 1800; c.y = 448; c.angle = 0; c.speed = 200; // on the road, checkpoint ahead
     state.player.x = c.x; state.player.y = c.y; state.mission.timer = 82;
-    for (let i = 0; i < 30; i++) step(STEP);
+    for (let i = 0; i < 15; i++) step(STEP);
   }
   renderer.draw(state, screen, best, time);
   renderer.draw(state, screen, best, time);

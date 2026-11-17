@@ -145,7 +145,7 @@ export function createRenderer(canvas) {
     ctx.fillText(`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}  ${s.mission.done.length}/6 missions done`, 24, 152);
     ctx.font = '14px ' + FONT; ctx.fillStyle = PALETTE.gold;
     ctx.fillText(missionObjective(s.mission).slice(0, 52), 24, 174);
-    if (s.mission.timer > 0) { ctx.fillStyle = '#e5534b'; ctx.font = 'bold 18px ' + FONT; ctx.fillText(`TIME ${Math.ceil(s.mission.timer)}s`, 24, 200); }
+    if (s.mission.timer > 0) { ctx.fillStyle = PALETTE.panel; ctx.fillRect(12, 190, 150, 30); ctx.fillStyle = '#e5534b'; ctx.font = 'bold 18px ' + FONT; ctx.fillText(`TIME ${Math.ceil(s.mission.timer)}s`, 24, 212); }
     if (s.player.car) {
       const c = s.player.car;
       ctx.fillStyle = PALETTE.panel; ctx.fillRect(W - 220, H - 64, 206, 50);
@@ -158,8 +158,14 @@ export function createRenderer(canvas) {
       ctx.fillStyle = 'rgba(8,10,16,0.88)'; ctx.fillRect(W / 2 - 320, H - 150, 640, 64);
       ctx.strokeStyle = PALETTE.gold; ctx.strokeRect(W / 2 - 320, H - 150, 640, 64);
       ctx.fillStyle = '#fff'; ctx.font = '15px ' + FONT;
-      ctx.fillText(s.mission.dialogue.slice(0, 90), W / 2 - 306, H - 122);
-      ctx.fillText(s.mission.dialogue.slice(90, 180), W / 2 - 306, H - 100);
+      // Word-wrap the dialogue into two lines instead of cutting words in half.
+      const words = s.mission.dialogue.split(' '); const lines = ['', '']; let li = 0;
+      for (const w of words) {
+        if (ctx.measureText(lines[li] + ' ' + w).width > 600 && li === 0) li = 1;
+        lines[li] += (lines[li] ? ' ' : '') + w;
+      }
+      ctx.fillText(lines[0], W / 2 - 306, H - 122);
+      ctx.fillText(lines[1], W / 2 - 306, H - 100);
     }
     drawMinimap(s);
   }
