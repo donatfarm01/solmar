@@ -1,7 +1,7 @@
-// Solmar — a make.fun gta6-01 entry, run on Node 22 with the standard
-// library only. The game is plain static files under game/ (index.html and
-// its ES modules, no build step, no network request). This program hands
-// the entry in: it copies game/ and screenshots/ from beside this file into
+// Solmar — a make.fun gta6-01 entry, Node 22, standard library only.
+// The game is plain static files under game/ (index.html plus its ES
+// modules — no build step, no network request). This program hands the
+// entry in: it copies game/ and screenshots/ from beside this file into
 // the output directory and writes /output/dossier.json with the vendored
 // make.fun library's buildDossier.
 //

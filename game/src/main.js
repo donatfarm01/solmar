@@ -1,835 +1,843 @@
-// Solmar — boot and game loop. Fixed 1/60 s steps. Screens: title, play,
-// paused, wasted, busted. The player walks or drives; traffic and
-// pedestrians share the streets; police answer the wanted level; combat,
-// pickups, six story missions and a localStorage save round it out.
+// Solmar — boot and loop. Fixed 1/60 s ticks. Views: title, play,
+// paused, wasted, busted. The hero walks or drives; traffic and walkers
+// share the streets; the law answers the heat; combat, pickups, six story
+// jobs and a localStorage save round it out.
 // ?shot=title|driving|wanted|mission stages one scene for a screenshot and
-// sets window.__shotReady when the frame is drawn.
-import { CITY, STEP, SAVE_KEY, SEED, PLAYER, CAR_TYPES, WANTED_DECAY } from './config.js';
-import { createRandom, clamp, dist, angleTo } from './random.js';
-import { createCity, collidesBuilding, spawnPeds, spawnTraffic, isOnRoad, nearestRoadPoint } from './world.js';
-import { MISSIONS, createMissionState, startMission, missionObjective } from './missions.js';
-import { createAudio } from './audio.js';
-import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_ENTER, ACTION_PUNCH, ACTION_MUTE } from './input.js';
-import { createRenderer, SCREEN_TITLE, SCREEN_PLAY, SCREEN_PAUSED, SCREEN_OVER, SCREEN_BUSTED } from './render.js';
+// sets window.__shotReady once the frame is drawn.
+import { MAP, TICK, SAVE_SLOT, WORLD_SEED, HERO, VEHICLES, HEAT_FADE } from './config.js';
+import { makeRng, bound, gap, headingTo } from './random.js';
+import { buildTown, hitsStructure, spawnWalkers, spawnDrivers, closestStreetPoint } from './world.js';
+import { JOBS, freshJobState, beginJob } from './missions.js';
+import { makeSound } from './audio.js';
+import { makeControls, KEY_OK, KEY_PAUSE, KEY_USE, KEY_HIT, KEY_SOUND } from './input.js';
+import { makePainter, VIEW_TITLE, VIEW_PLAY, VIEW_PAUSED, VIEW_OVER, VIEW_BUSTED } from './render.js';
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
 const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : SEED;
+const seed = Number.isInteger(seedParam) ? seedParam : WORLD_SEED;
 const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const renderer = createRenderer(canvas);
-const input = createInput(canvas);
-const audio = createAudio();
+const statusEl = document.getElementById('status');
+const painter = makePainter(canvas);
+const controls = makeControls(canvas);
+const sound = makeSound();
 
-function newState() {
-  const city = createCity(createRandom(seed));
-  const cars = city.parked.map((c) => ({ ...c, hp: 100 }));
-  for (const c of spawnTraffic(createRandom(seed + 7), 14)) cars.push({ ...c, hp: 100 });
+function freshSim() {
+  const town = buildTown(makeRng(seed));
+  const autos = town.parked.map((c) => ({ ...c, integrity: 100 }));
+  for (const c of spawnDrivers(makeRng(seed + 7), 14)) autos.push({ ...c, integrity: 100 });
   return {
-    city,
-    cars,
-    peds: spawnPeds(createRandom(seed + 13), 26),
-    cops: [],
-    bullets: [],
-    particles: [],
-    floaters: [],
-    skids: [],
-    player: { x: 480, y: 480, angle: 0, hp: 100, armour: 0, ammo: 60, car: null, speed: 0 },
-    cash: 150,
-    wanted: 0,
-    wantedHeat: 0,
-    clock: 9.5,
-    time: 0,
-    shake: 0,
-    mission: createMissionState(),
-    hasSave: false,
-    best: 0,
-    kills: 0,
-    carsStolen: 0,
+    town,
+    autos,
+    walkers: spawnWalkers(makeRng(seed + 13), 26),
+    officers: [],
+    shots: [],
+    sparks: [],
+    labels: [],
+    marks: [],
+    hero: { x: 480, y: 480, angle: 0, health: 100, armor: 0, rounds: 60, ride: null, velocity: 0 },
+    money: 150,
+    heat: 0,
+    heatLevel: 0,
+    hour: 9.5,
+    elapsed: 0,
+    jolt: 0,
+    job: freshJobState(),
+    saved: false,
+    record: 0,
+    takedowns: 0,
+    thefts: 0,
   };
 }
-let state = newState();
-let screen = SCREEN_TITLE;
-let best = 0;
-let accumulator = 0;
-let last = performance.now();
-let time = 0;
-let policeSpawnT = 0;
-let pedSpawnT = 0;
-let saveT = 0;
+let sim = freshSim();
+let view = VIEW_TITLE;
+let record = 0;
+let bank = 0;
+let prev = performance.now();
+let elapsed = 0;
+let lawClock = 0;
+let crowdClock = 0;
+let storeClock = 0;
 
-function readSave() {
+function wrapAngle(d) {
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return d;
+}
+function fetchSave() {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
+    const raw = window.localStorage.getItem(SAVE_SLOT);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
-function writeSave() {
+function storeSave() {
   try {
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify({
-      cash: state.cash,
-      hp: state.player.hp,
-      ammo: state.player.ammo,
-      armour: state.player.armour,
-      x: state.player.x,
-      y: state.player.y,
-      done: state.mission.done,
-      active: state.mission.active,
-      best,
+    window.localStorage.setItem(SAVE_SLOT, JSON.stringify({
+      cash: sim.money,
+      hp: sim.hero.health,
+      ammo: sim.hero.rounds,
+      armour: sim.hero.armor,
+      x: sim.hero.x,
+      y: sim.hero.y,
+      done: sim.job.finished,
+      active: sim.job.current,
+      best: record,
     }));
   } catch {
     // Storage off: progress lasts this visit only.
   }
 }
-function loadSave() {
-  const s = readSave();
+function applySave() {
+  const s = fetchSave();
   if (!s) return false;
-  state.cash = s.cash ?? 150;
-  state.player.hp = s.hp ?? 100;
-  state.player.ammo = s.ammo ?? 60;
-  state.player.armour = s.armour ?? 0;
-  state.player.x = s.x ?? 480;
-  state.player.y = s.y ?? 480;
-  state.mission.done = s.done ?? [];
-  best = s.best ?? 0;
-  if (typeof s.active === 'number' && s.active >= 0 && !state.mission.done.includes(s.active)) {
-    startMission(state.mission, s.active);
+  sim.money = s.cash ?? 150;
+  sim.hero.health = s.hp ?? 100;
+  sim.hero.rounds = s.ammo ?? 60;
+  sim.hero.armor = s.armour ?? 0;
+  sim.hero.x = s.x ?? 480;
+  sim.hero.y = s.y ?? 480;
+  sim.job.finished = s.done ?? [];
+  record = s.best ?? 0;
+  if (typeof s.active === 'number' && s.active >= 0 && !sim.job.finished.includes(s.active)) {
+    beginJob(sim.job, s.active);
   }
   return true;
 }
 try {
-  best = Number.parseInt(window.localStorage.getItem('solmar.best') ?? '0', 10) || 0;
+  record = Number.parseInt(window.localStorage.getItem('solmar.best') ?? '0', 10) || 0;
 } catch {
-  best = 0;
+  record = 0;
 }
-state.hasSave = !!readSave();
-if (state.cash > best) best = state.cash;
+sim.saved = !!fetchSave();
+if (sim.money > record) record = sim.money;
 
-function announce(msg) { status.textContent = msg; }
-function floater(x, y, text, color) {
-  state.floaters.push({ x, y, text, color: color || '#f2c94c', life: 1.6 });
+function statusLine(msg) { statusEl.textContent = msg; }
+function addLabel(x, y, words, color) {
+  sim.labels.push({ x, y, words, color: color || '#f2c94c', life: 1.6 });
 }
-function burst(x, y, color, n) {
+function addSparks(x, y, color, n) {
   for (let i = 0; i < n; i++) {
-    state.particles.push({
+    sim.sparks.push({
       x, y,
-      vx: (Math.random() - 0.5) * 220,
-      vy: (Math.random() - 0.5) * 220,
+      dx: (Math.random() - 0.5) * 220,
+      dy: (Math.random() - 0.5) * 220,
       life: 0.5,
-      max: 0.5,
+      span: 0.5,
       size: 3 + Math.random() * 3,
       color,
     });
   }
 }
-function addWanted(n, why) {
-  state.wanted = clamp(state.wanted + n, 0, 5);
-  state.wantedHeat = 1;
-  if (n > 0) floater(state.player.x, state.player.y - 24, `WANTED +${n} — ${why}`, '#e5534b');
+function raiseHeat(n, why) {
+  sim.heat = bound(sim.heat + n, 0, 5);
+  sim.heatLevel = 1;
+  if (n > 0) addLabel(sim.hero.x, sim.hero.y - 24, `WANTED +${n} — ${why}`, '#e5534b');
 }
-function nearestCar(x, y, maxD) {
-  let bestC = null;
-  let bd = maxD;
-  for (const c of state.cars) {
-    const d = dist(x, y, c.x, c.y);
-    if (d < bd) { bd = d; bestC = c; }
+function closestAuto(x, y, maxD) {
+  let pick = null;
+  let bestGap = maxD;
+  for (const c of sim.autos) {
+    const d = gap(x, y, c.x, c.y);
+    if (d < bestGap) { bestGap = d; pick = c; }
   }
-  return bestC;
+  return pick;
 }
-function enterCar() {
-  const p = state.player;
-  if (p.car) {
-    const c = p.car;
-    p.car = null;
-    p.x = c.x + 40;
-    p.y = c.y;
-    p.angle = c.angle;
-    c.speed = 0;
-    announce('On foot.');
+function useAuto() {
+  const h = sim.hero;
+  if (h.ride) {
+    const c = h.ride;
+    h.ride = null;
+    h.x = c.x + 40;
+    h.y = c.y;
+    h.angle = c.angle;
+    c.velocity = 0;
+    statusLine('On foot.');
     return;
   }
-  const c = nearestCar(p.x, p.y, 70);
+  const c = closestAuto(h.x, h.y, 70);
   if (!c) {
-    announce('No car nearby.');
+    statusLine('No car nearby.');
     return;
   }
-  if (c.driver) {
-    // Stealing an occupied car: the driver bails out and flees, and the
-    // theft puts a star on the player.
-    c.driver = false;
-    addWanted(1, 'car theft');
-    state.carsStolen += 1;
-    state.peds.push({
-      x: c.x + 30, y: c.y, angle: 0, speed: 120, shirt: '#e5534b',
-      scared: 3, fleeX: c.x + 200, fleeY: c.y, walkT: 0,
+  if (c.occupied) {
+    // Taking an occupied motor: its driver bails and runs, and the
+    // theft puts a star on the hero.
+    c.occupied = false;
+    raiseHeat(1, 'car theft');
+    sim.thefts += 1;
+    sim.walkers.push({
+      x: c.x + 30, y: c.y, angle: 0, pace: 120, top: '#e5534b',
+      panic: 3, runX: c.x + 200, runY: c.y, paceT: 0,
     });
-    floater(c.x, c.y - 30, 'CAR STOLEN!', '#e5534b');
-    audio.crash();
+    addLabel(c.x, c.y - 30, 'CAR STOLEN!', '#e5534b');
+    sound.smash();
   }
-  state.cars.splice(state.cars.indexOf(c), 1);
-  p.car = c;
-  p.x = c.x;
-  p.y = c.y;
-  audio.pickup();
-  announce(`Driving a ${CAR_TYPES[c.type].name}.`);
+  sim.autos.splice(sim.autos.indexOf(c), 1);
+  h.ride = c;
+  h.x = c.x;
+  h.y = c.y;
+  sound.collect();
+  statusLine(`Driving a ${VEHICLES[c.kind].name}.`);
 }
-function shoot() {
-  const p = state.player;
-  if (p.ammo <= 0) {
-    floater(p.x, p.y - 24, 'NO AMMO', '#e5534b');
+function fire() {
+  const h = sim.hero;
+  if (h.rounds <= 0) {
+    addLabel(h.x, h.y - 24, 'NO AMMO', '#e5534b');
     return;
   }
-  p.ammo -= 1;
-  audio.shoot();
-  const m = input.mouse();
-  const sx = p.car ? p.car.x : p.x;
-  const sy = p.car ? p.car.y : p.y;
-  const camX = Math.max(renderer.width / 2, Math.min(CITY.width - renderer.width / 2, sx));
-  const camY = Math.max(renderer.height / 2, Math.min(CITY.height - renderer.height / 2, sy));
-  const wx = m.x + camX - renderer.width / 2;
-  const wy = m.y + camY - renderer.height / 2;
-  const a = angleTo(sx, sy, wx, wy);
-  state.bullets.push({
+  h.rounds -= 1;
+  sound.gunshot();
+  const m = controls.pointer();
+  const sx = h.ride ? h.ride.x : h.x;
+  const sy = h.ride ? h.ride.y : h.y;
+  const camX = Math.max(painter.width / 2, Math.min(MAP.width - painter.width / 2, sx));
+  const camY = Math.max(painter.height / 2, Math.min(MAP.height - painter.height / 2, sy));
+  const wx = m.x + camX - painter.width / 2;
+  const wy = m.y + camY - painter.height / 2;
+  const a = headingTo(sx, sy, wx, wy);
+  sim.shots.push({
     x: sx + Math.cos(a) * 24,
     y: sy + Math.sin(a) * 24,
-    vx: Math.cos(a) * 720,
-    vy: Math.sin(a) * 720,
+    dx: Math.cos(a) * 720,
+    dy: Math.sin(a) * 720,
     life: 0.6,
   });
-  if (state.wanted < 1) addWanted(1, 'firing a weapon');
+  if (sim.heat < 1) raiseHeat(1, 'firing a weapon');
 }
-function punch() {
-  const p = state.player;
-  if (p.car) return;
-  audio.punch();
-  for (const ped of state.peds) {
-    if (dist(p.x, p.y, ped.x, ped.y) < PLAYER.punchRange + 12) {
-      ped.scared = 3;
-      ped.fleeX = ped.x + (ped.x - p.x) * 3;
-      ped.fleeY = ped.y + (ped.y - p.y) * 3;
-      burst(ped.x, ped.y, '#fff', 6);
-      addWanted(1, 'assault');
-      floater(ped.x, ped.y - 20, 'WHAM!', '#fff');
+function strike() {
+  const h = sim.hero;
+  if (h.ride) return;
+  sound.thump();
+  for (const ped of sim.walkers) {
+    if (gap(h.x, h.y, ped.x, ped.y) < HERO.punchRange + 12) {
+      ped.panic = 3;
+      ped.runX = ped.x + (ped.x - h.x) * 3;
+      ped.runY = ped.y + (ped.y - h.y) * 3;
+      addSparks(ped.x, ped.y, '#fff', 6);
+      raiseHeat(1, 'assault');
+      addLabel(ped.x, ped.y - 20, 'WHAM!', '#fff');
     }
   }
-  for (const cop of state.cops) {
-    if (dist(p.x, p.y, cop.x, cop.y) < PLAYER.punchRange + 12) {
-      cop.hp -= PLAYER.punch;
-      burst(cop.x, cop.y, '#2b4acb', 8);
-      addWanted(1, 'attacking police');
+  for (const cop of sim.officers) {
+    if (gap(h.x, h.y, cop.x, cop.y) < HERO.punchRange + 12) {
+      cop.health -= HERO.punch;
+      addSparks(cop.x, cop.y, '#2b4acb', 8);
+      raiseHeat(1, 'attacking police');
     }
   }
 }
-function hitPlayer(dmg) {
-  const p = state.player;
-  if (p.armour > 0) {
-    const absorbed = Math.min(p.armour, dmg * 0.6);
-    p.armour -= absorbed;
-    dmg -= absorbed;
+function hurtHero(dmg) {
+  const h = sim.hero;
+  if (h.armor > 0) {
+    const soaked = Math.min(h.armor, dmg * 0.6);
+    h.armor -= soaked;
+    dmg -= soaked;
   }
-  p.hp -= dmg;
-  state.shake = Math.max(state.shake, 8);
-  if (p.hp <= 0) wasted();
+  h.health -= dmg;
+  sim.jolt = Math.max(sim.jolt, 8);
+  if (h.health <= 0) flatlined();
 }
-function wasted() {
-  audio.busted();
-  state.cash = Math.max(0, state.cash - 200);
-  state.player.hp = 100;
-  state.player.armour = 0;
-  state.player.car = null;
-  state.player.x = state.city.hospital.x;
-  state.player.y = state.city.hospital.y + 80;
-  state.wanted = 0;
-  state.cops = [];
-  state.bullets = [];
-  writeSave();
-  screen = SCREEN_OVER;
-  announce('Wasted. You wake up at Solmar General Hospital, $200 lighter.');
+function flatlined() {
+  sound.caught();
+  sim.money = Math.max(0, sim.money - 200);
+  sim.hero.health = 100;
+  sim.hero.armor = 0;
+  sim.hero.ride = null;
+  sim.hero.x = sim.town.hospital.x;
+  sim.hero.y = sim.town.hospital.y + 80;
+  sim.heat = 0;
+  sim.officers = [];
+  sim.shots = [];
+  storeSave();
+  view = VIEW_OVER;
+  statusLine('Wasted. You wake up at Solmar General Hospital, $200 lighter.');
 }
-function busted() {
-  audio.busted();
-  state.cash = Math.max(0, state.cash - 200);
-  state.player.hp = 100;
-  state.player.car = null;
-  state.player.x = state.city.precinct.x;
-  state.player.y = state.city.precinct.y + 80;
-  state.wanted = 0;
-  state.cops = [];
-  state.bullets = [];
-  writeSave();
-  screen = SCREEN_BUSTED;
-  announce('Busted. The precinct lets you go, $200 lighter.');
+function arrested() {
+  sound.caught();
+  sim.money = Math.max(0, sim.money - 200);
+  sim.hero.health = 100;
+  sim.hero.ride = null;
+  sim.hero.x = sim.town.precinct.x;
+  sim.hero.y = sim.town.precinct.y + 80;
+  sim.heat = 0;
+  sim.officers = [];
+  sim.shots = [];
+  storeSave();
+  view = VIEW_BUSTED;
+  statusLine('Busted. The precinct lets you go, $200 lighter.');
 }
-function completeMission() {
-  const m = MISSIONS[state.mission.active];
-  state.cash += m.reward;
-  state.mission.done.push(m.id);
-  floater(state.player.x, state.player.y - 30, `+$${m.reward} — ${m.title} COMPLETE`, '#2f9e44');
-  audio.jingle();
-  announce(`Mission complete: ${m.title}. +$${m.reward}.`);
-  state.mission.active = -1;
-  state.mission.step = 0;
-  state.mission.timer = 0;
-  state.mission.dialogue = `${m.giver}: Nice work, Danny. $${m.reward} is yours. Press N for the next job.`;
-  state.mission.dialogueT = 6;
-  if (state.cash > best) {
-    best = state.cash;
+function finishJob() {
+  const job = JOBS[sim.job.current];
+  sim.money += job.pay;
+  sim.job.finished.push(job.num);
+  addLabel(sim.hero.x, sim.hero.y - 30, `+$${job.pay} — ${job.name} COMPLETE`, '#2f9e44');
+  sound.fanfare();
+  statusLine(`Mission complete: ${job.name}. +$${job.pay}.`);
+  sim.job.current = -1;
+  sim.job.stage = 0;
+  sim.job.countdown = 0;
+  sim.job.speech = `${job.client}: Good driving, Danny. $${job.pay} is yours. Press N for the next job.`;
+  sim.job.speechT = 6;
+  if (sim.money > record) {
+    record = sim.money;
     try {
-      window.localStorage.setItem('solmar.best', String(best));
+      window.localStorage.setItem('solmar.best', String(record));
     } catch {
       // ignore
     }
   }
-  writeSave();
+  storeSave();
 }
-function stepMission(dt) {
-  const ms = state.mission;
-  if (ms.active < 0) return;
-  const m = MISSIONS[ms.active];
-  const st = m.steps[ms.step];
-  if (!st) return;
-  const px = state.player.car ? state.player.car.x : state.player.x;
-  const py = state.player.car ? state.player.car.y : state.player.y;
-  if (st.kind === 'timed' && ms.step === 0 && ms.timer <= 0) ms.timer = st.time;
-  if (ms.timer > 0) {
-    ms.timer -= dt;
-    if (ms.timer <= 0) {
-      ms.dialogue = 'Marla Voss: Too slow — the job fell through. Press N to retry.';
-      ms.dialogueT = 6;
-      ms.active = -1;
-      ms.step = 0;
+function tickJob(dt) {
+  const js = sim.job;
+  if (js.current < 0) return;
+  const job = JOBS[js.current];
+  const stage = job.stages[js.stage];
+  if (!stage) return;
+  const px = sim.hero.ride ? sim.hero.ride.x : sim.hero.x;
+  const py = sim.hero.ride ? sim.hero.ride.y : sim.hero.y;
+  if (stage.type === 'timed' && js.stage === 0 && js.countdown <= 0) js.countdown = stage.limit;
+  if (js.countdown > 0) {
+    js.countdown -= dt;
+    if (js.countdown <= 0) {
+      js.speech = 'Marla Voss: Too slow — that job is gone. Press N to try again.';
+      js.speechT = 6;
+      js.current = -1;
+      js.stage = 0;
       return;
     }
   }
-  if (st.kind === 'steal') {
-    if (state.player.car) {
-      ms.step += 1;
-      ms.dialogue = 'Rico: That\'s the one. Now bring it to my garage.';
-      ms.dialogueT = 5;
+  if (stage.type === 'steal') {
+    if (sim.hero.ride) {
+      js.stage += 1;
+      js.speech = 'Rico: That\'s the one. Now bring it down to my shop.';
+      js.speechT = 5;
     }
     return;
   }
-  if (st.kind === 'wanted') {
-    if (state.wanted >= 2 && ms.step === 0) {
-      ms.step = 1;
-      ms.dialogue = 'Marla Voss: Now lose them and get to the safe house.';
-      ms.dialogueT = 5;
+  if (stage.type === 'wanted') {
+    if (sim.heat >= 2 && js.stage === 0) {
+      js.stage = 1;
+      js.speech = 'Marla Voss: Now shake them and reach the hideout.';
+      js.speechT = 5;
     }
     return;
   }
-  if (st.kind === 'escape') {
-    if (dist(px, py, st.x, st.y) < 70) completeMission();
+  if (stage.type === 'escape') {
+    if (gap(px, py, stage.x, stage.y) < 70) finishJob();
     return;
   }
-  if (st.kind === 'goto' || st.kind === 'timed') {
-    const needCar = st.needCar && !state.player.car;
-    if (dist(px, py, st.x, st.y) < 70 && !needCar) {
-      // Mission 3: the safe house will not take you while the cops are on you.
-      if (st.kind === 'goto' && m.id === 3 && ms.step === 1 && state.wanted > 0) {
-        ms.dialogue = 'Marla Voss: Not while the cops are on you — lose them first!';
-        ms.dialogueT = 4;
+  if (stage.type === 'goto' || stage.type === 'timed') {
+    const missingRide = stage.needsRide && !sim.hero.ride;
+    if (gap(px, py, stage.x, stage.y) < 70 && !missingRide) {
+      // Job 3: the hideout will not take you while the law is on you.
+      if (stage.type === 'goto' && job.num === 3 && js.stage === 1 && sim.heat > 0) {
+        js.speech = 'Marla Voss: Not with the law on your tail — shake them first!';
+        js.speechT = 4;
         return;
       }
-      ms.step += 1;
-      if (ms.step >= m.steps.length) completeMission();
+      js.stage += 1;
+      if (js.stage >= job.stages.length) finishJob();
       else {
-        audio.pickup();
-        ms.dialogue = MISSIONS[ms.active].steps[ms.step].label;
-        ms.dialogueT = 5;
+        sound.collect();
+        js.speech = JOBS[sim.job.current].stages[js.stage].text;
+        js.speechT = 5;
       }
     }
   }
 }
-function stepPlayer(dt) {
-  const p = state.player;
-  const dir = input.direction();
-  const m = input.mouse();
-  if (p.car) {
-    const c = p.car;
-    const spec = CAR_TYPES[c.type];
-    const fwd = input.keys.has('w') || input.keys.has('arrowup');
-    const back = input.keys.has('s') || input.keys.has('arrowdown');
-    const steer = (input.keys.has('a') || input.keys.has('arrowleft') ? -1 : 0)
-      + (input.keys.has('d') || input.keys.has('arrowright') ? 1 : 0);
-    if (fwd) c.speed += spec.accel * dt;
-    if (back) c.speed -= spec.accel * 0.8 * dt;
-    c.speed = clamp(c.speed, -spec.top * 0.45, spec.top);
-    if (!fwd && !back) c.speed *= Math.pow(0.4, dt);
-    const dirSign = c.speed >= 0 ? 1 : -1;
-    c.angle += steer * spec.turn * dt * dirSign * Math.min(1, Math.abs(c.speed) / 120);
-    const nx = c.x + Math.cos(c.angle) * c.speed * dt;
-    const ny = c.y + Math.sin(c.angle) * c.speed * dt;
-    if (collidesBuilding(state.city.buildings, nx, ny, 22)) {
-      if (Math.abs(c.speed) > 160) {
-        audio.crash();
-        state.shake = 12;
-        burst(c.x, c.y, '#888', 10);
-        hitPlayer(6);
-      }
-      c.speed *= -0.25;
-      state.skids.push({ x1: c.x, y1: c.y, x2: nx, y2: ny });
-      if (state.skids.length > 80) state.skids.shift();
-    } else {
-      c.x = clamp(nx, 40, CITY.width - 40);
-      c.y = clamp(ny, 40, CITY.height - 140);
+function driveRide(dt) {
+  const h = sim.hero;
+  const c = h.ride;
+  const spec = VEHICLES[c.kind];
+  const fwd = controls.held.has('w') || controls.held.has('arrowup');
+  const back = controls.held.has('s') || controls.held.has('arrowdown');
+  const steer = (controls.held.has('a') || controls.held.has('arrowleft') ? -1 : 0)
+    + (controls.held.has('d') || controls.held.has('arrowright') ? 1 : 0);
+  if (fwd) c.velocity += spec.accel * dt;
+  if (back) c.velocity -= spec.accel * 0.8 * dt;
+  c.velocity = bound(c.velocity, -spec.top * 0.45, spec.top);
+  if (!fwd && !back) c.velocity *= Math.pow(0.4, dt);
+  const going = c.velocity >= 0 ? 1 : -1;
+  c.angle += steer * spec.turn * dt * going * Math.min(1, Math.abs(c.velocity) / 120);
+  const nx = c.x + Math.cos(c.angle) * c.velocity * dt;
+  const ny = c.y + Math.sin(c.angle) * c.velocity * dt;
+  if (hitsStructure(sim.town.towers, nx, ny, 22)) {
+    if (Math.abs(c.velocity) > 160) {
+      sound.smash();
+      sim.jolt = 12;
+      addSparks(c.x, c.y, '#888', 10);
+      hurtHero(6);
     }
-    p.x = c.x;
-    p.y = c.y;
-    p.angle = c.angle;
-    if (Math.abs(c.speed) > 240 && steer) {
-      state.skids.push({ x1: c.x, y1: c.y, x2: c.x - Math.cos(c.angle) * 20, y2: c.y - Math.sin(c.angle) * 20 });
-    }
-    audio.engine(Math.abs(c.speed) / 430);
-    // Running a pedestrian over is a crime, and it shows.
-    for (const ped of state.peds) {
-      if (dist(c.x, c.y, ped.x, ped.y) < 26 && Math.abs(c.speed) > 60) {
-        ped.scared = 3;
-        ped.fleeX = ped.x + 300;
-        burst(ped.x, ped.y, '#e5534b', 8);
-        addWanted(1, 'hit a pedestrian');
-        hitPlayer(0);
-      }
-    }
+    c.velocity *= -0.25;
+    sim.marks.push({ x1: c.x, y1: c.y, x2: nx, y2: ny });
+    if (sim.marks.length > 80) sim.marks.shift();
   } else {
-    const speed = input.run ? PLAYER.run : PLAYER.walk;
-    const nx = p.x + dir.x * speed * dt;
-    const ny = p.y + dir.y * speed * dt;
-    if (!collidesBuilding(state.city.buildings, nx, p.y, PLAYER.radius)) p.x = clamp(nx, 20, CITY.width - 20);
-    if (!collidesBuilding(state.city.buildings, p.x, ny, PLAYER.radius)) p.y = clamp(ny, 20, CITY.height - 150);
-    if (dir.x || dir.y) p.angle = Math.atan2(dir.y, dir.x);
-    audio.engine(0);
-    // On foot the player aims at the mouse.
-    const camX = Math.max(renderer.width / 2, Math.min(CITY.width - renderer.width / 2, p.x));
-    const camY = Math.max(renderer.height / 2, Math.min(CITY.height - renderer.height / 2, p.y));
-    p.aim = angleTo(p.x, p.y, m.x + camX - renderer.width / 2, m.y + camY - renderer.height / 2);
+    c.x = bound(nx, 40, MAP.width - 40);
+    c.y = bound(ny, 40, MAP.height - 140);
   }
+  h.x = c.x;
+  h.y = c.y;
+  h.angle = c.angle;
+  if (Math.abs(c.velocity) > 240 && steer) {
+    sim.marks.push({ x1: c.x, y1: c.y, x2: c.x - Math.cos(c.angle) * 20, y2: c.y - Math.sin(c.angle) * 20 });
+  }
+  sound.motor(Math.abs(c.velocity) / 430);
+  // Running a walker over is a crime, and it shows.
+  for (const ped of sim.walkers) {
+    if (gap(c.x, c.y, ped.x, ped.y) < 26 && Math.abs(c.velocity) > 60) {
+      ped.panic = 3;
+      ped.runX = ped.x + 300;
+      addSparks(ped.x, ped.y, '#e5534b', 8);
+      raiseHeat(1, 'hit a pedestrian');
+      hurtHero(0);
+    }
+  }
+}
+function walkHero(dt) {
+  const h = sim.hero;
+  const dir = controls.heading();
+  const m = controls.pointer();
+  const pace = controls.sprint ? HERO.run : HERO.walk;
+  const nx = h.x + dir.x * pace * dt;
+  const ny = h.y + dir.y * pace * dt;
+  if (!hitsStructure(sim.town.towers, nx, h.y, HERO.radius)) h.x = bound(nx, 20, MAP.width - 20);
+  if (!hitsStructure(sim.town.towers, h.x, ny, HERO.radius)) h.y = bound(ny, 20, MAP.height - 150);
+  if (dir.x || dir.y) h.angle = Math.atan2(dir.y, dir.x);
+  sound.motor(0);
+  // On foot the hero aims at the pointer.
+  const camX = Math.max(painter.width / 2, Math.min(MAP.width - painter.width / 2, h.x));
+  const camY = Math.max(painter.height / 2, Math.min(MAP.height - painter.height / 2, h.y));
+  h.aimAngle = headingTo(h.x, h.y, m.x + camX - painter.width / 2, m.y + camY - painter.height / 2);
+}
+function tickHero(dt) {
+  if (sim.hero.ride) driveRide(dt);
+  else walkHero(dt);
+  const h = sim.hero;
   // Pickups: health, armour, ammo, cash.
-  for (const pk of state.city.pickups) {
-    if (!pk.taken && dist(p.x, p.y, pk.x, pk.y) < 30) {
-      pk.taken = true;
-      audio.pickup();
-      if (pk.kind === 'health') {
-        p.hp = Math.min(100, p.hp + 40);
-        floater(pk.x, pk.y - 20, '+40 HP', '#2f9e44');
+  for (const g of sim.town.goods) {
+    if (!g.got && gap(h.x, h.y, g.x, g.y) < 30) {
+      g.got = true;
+      sound.collect();
+      if (g.sort === 'health') {
+        h.health = Math.min(100, h.health + 40);
+        addLabel(g.x, g.y - 20, '+40 HP', '#2f9e44');
       }
-      if (pk.kind === 'armour') {
-        p.armour = Math.min(100, p.armour + 50);
-        floater(pk.x, pk.y - 20, '+50 ARMOUR', '#4f8fd0');
+      if (g.sort === 'armour') {
+        h.armor = Math.min(100, h.armor + 50);
+        addLabel(g.x, g.y - 20, '+50 ARMOUR', '#4f8fd0');
       }
-      if (pk.kind === 'ammo') {
-        p.ammo += 30;
-        floater(pk.x, pk.y - 20, '+30 AMMO', '#e8b23a');
+      if (g.sort === 'ammo') {
+        h.rounds += 30;
+        addLabel(g.x, g.y - 20, '+30 AMMO', '#e8b23a');
       }
-      if (pk.kind === 'cash') {
-        state.cash += 50;
-        floater(pk.x, pk.y - 20, '+$50', '#f2c94c');
+      if (g.sort === 'cash') {
+        sim.money += 50;
+        addLabel(g.x, g.y - 20, '+$50', '#f2c94c');
       }
     }
   }
 }
-function stepTraffic(dt) {
-  for (const c of state.cars) {
-    if (c.police) continue;
-    // Traffic hugs the roads: steer toward the nearest road line, hold speed.
-    const rp = nearestRoadPoint(c.x, c.y);
+function tickFlow(dt) {
+  for (const c of sim.autos) {
+    if (c.patrol) continue;
+    // Traffic hugs the streets: steer toward the nearest street line, hold speed.
+    const rp = closestStreetPoint(c.x, c.y);
     const target = Math.abs(c.x - rp.x) < Math.abs(c.y - rp.y)
       ? (c.x > rp.x ? Math.PI : 0)
       : (c.y > rp.y ? Math.PI / 2 : -Math.PI / 2);
-    let diff = target - c.angle;
-    while (diff > Math.PI) diff -= 2 * Math.PI;
-    while (diff < -Math.PI) diff += 2 * Math.PI;
-    c.angle += clamp(diff, -1.4 * dt, 1.4 * dt);
+    const diff = wrapAngle(target - c.angle);
+    c.angle += bound(diff, -1.4 * dt, 1.4 * dt);
     if (!c.traffic) continue;
-    c.speed = 120;
-    c.x += Math.cos(c.angle) * c.speed * dt;
-    c.y += Math.sin(c.angle) * c.speed * dt;
-    if (c.x < 60 || c.x > CITY.width - 60 || c.y < 60 || c.y > CITY.height - 160) c.angle += Math.PI;
+    c.velocity = 120;
+    c.x += Math.cos(c.angle) * c.velocity * dt;
+    c.y += Math.sin(c.angle) * c.velocity * dt;
+    if (c.x < 60 || c.x > MAP.width - 60 || c.y < 60 || c.y > MAP.height - 160) c.angle += Math.PI;
   }
 }
-function stepPeds(dt) {
-  for (const ped of state.peds) {
-    if (ped.scared > 0) {
-      ped.scared -= dt;
-      const a = angleTo(ped.x, ped.y, ped.fleeX, ped.fleeY);
+function tickWalkers(dt) {
+  for (const ped of sim.walkers) {
+    if (ped.panic > 0) {
+      ped.panic -= dt;
+      const a = headingTo(ped.x, ped.y, ped.runX, ped.runY);
       ped.x += Math.cos(a) * 130 * dt;
       ped.y += Math.sin(a) * 130 * dt;
       ped.angle = a;
     } else {
-      ped.walkT -= dt;
-      if (ped.walkT <= 0) {
-        ped.walkT = 2 + Math.random() * 3;
+      ped.paceT -= dt;
+      if (ped.paceT <= 0) {
+        ped.paceT = 2 + Math.random() * 3;
         ped.angle = Math.random() * 6.28;
       }
-      const nx = ped.x + Math.cos(ped.angle) * ped.speed * dt;
-      const ny = ped.y + Math.sin(ped.angle) * ped.speed * dt;
-      if (!collidesBuilding(state.city.buildings, nx, ny, 10) && nx > 20 && nx < CITY.width - 20 && ny > 20 && ny < CITY.height - 150) {
+      const nx = ped.x + Math.cos(ped.angle) * ped.pace * dt;
+      const ny = ped.y + Math.sin(ped.angle) * ped.pace * dt;
+      const blocked = hitsStructure(sim.town.towers, nx, ny, 10);
+      const inside = nx > 20 && nx < MAP.width - 20 && ny > 20 && ny < MAP.height - 150;
+      if (!blocked && inside) {
         ped.x = nx;
         ped.y = ny;
       } else {
         ped.angle += Math.PI / 2;
       }
     }
-    // Gunfire nearby sends pedestrians running.
-    if (state.bullets.length && dist(ped.x, ped.y, state.player.x, state.player.y) < 220 && ped.scared <= 0) {
-      ped.scared = 2;
-      ped.fleeX = ped.x + (ped.x - state.player.x);
-      ped.fleeY = ped.y + (ped.y - state.player.y);
+    // Gunfire nearby sends walkers running.
+    if (sim.shots.length && gap(ped.x, ped.y, sim.hero.x, sim.hero.y) < 220 && ped.panic <= 0) {
+      ped.panic = 2;
+      ped.runX = ped.x + (ped.x - sim.hero.x);
+      ped.runY = ped.y + (ped.y - sim.hero.y);
     }
   }
-  pedSpawnT -= dt;
-  if (pedSpawnT <= 0 && state.peds.length < 30) {
-    pedSpawnT = 4;
-    state.peds.push({
-      x: clamp(state.player.x + (Math.random() < 0.5 ? -500 : 500), 60, CITY.width - 60),
-      y: clamp(state.player.y + (Math.random() < 0.5 ? -400 : 400), 60, CITY.height - 160),
+  crowdClock -= dt;
+  if (crowdClock <= 0 && sim.walkers.length < 30) {
+    crowdClock = 4;
+    sim.walkers.push({
+      x: bound(sim.hero.x + (Math.random() < 0.5 ? -500 : 500), 60, MAP.width - 60),
+      y: bound(sim.hero.y + (Math.random() < 0.5 ? -400 : 400), 60, MAP.height - 160),
       angle: Math.random() * 6.28,
-      speed: 40,
-      shirt: '#4f8fd0',
-      scared: 0,
-      fleeX: 0,
-      fleeY: 0,
-      walkT: 1,
+      pace: 40,
+      top: '#4f8fd0',
+      panic: 0,
+      runX: 0,
+      runY: 0,
+      paceT: 1,
     });
   }
 }
-function stepPolice(dt) {
-  // Heat cools when no police unit can see the player; cops chase, ram and
-  // arrest. More stars mean more units and faster pursuit cars.
-  const px = state.player.car ? state.player.car.x : state.player.x;
-  const py = state.player.car ? state.player.car.y : state.player.y;
-  const seen = state.cops.some((c) => dist(c.x, c.y, px, py) < 420)
-    || state.cars.some((c) => c.police && dist(c.x, c.y, px, py) < 500);
-  if (state.wanted > 0 && !seen) {
-    state.wantedHeat -= WANTED_DECAY * dt;
-    if (state.wantedHeat <= 0) {
-      state.wanted = Math.max(0, state.wanted - 1);
-      state.wantedHeat = 1;
-      floater(px, py - 30, 'Heat cooling…', '#b8b4a8');
+function tickLaw(dt) {
+  // Heat cools when no law unit can see the hero; officers chase, ram and
+  // arrest. More stars mean more units and faster pursuit motors.
+  const px = sim.hero.ride ? sim.hero.ride.x : sim.hero.x;
+  const py = sim.hero.ride ? sim.hero.ride.y : sim.hero.y;
+  const spotted = sim.officers.some((c) => gap(c.x, c.y, px, py) < 420)
+    || sim.autos.some((c) => c.patrol && gap(c.x, c.y, px, py) < 500);
+  if (sim.heat > 0 && !spotted) {
+    sim.heatLevel -= HEAT_FADE * dt;
+    if (sim.heatLevel <= 0) {
+      sim.heat = Math.max(0, sim.heat - 1);
+      sim.heatLevel = 1;
+      addLabel(px, py - 30, 'Heat cooling…', '#b8b4a8');
     }
-  } else if (seen) {
-    state.wantedHeat = 1;
+  } else if (spotted) {
+    sim.heatLevel = 1;
   }
-  const wantCops = state.wanted >= 1 ? Math.min(2 + state.wanted, 6) : 0;
-  policeSpawnT -= dt;
-  if (state.wanted > 0 && policeSpawnT <= 0) {
-    policeSpawnT = 2.5;
-    if (state.cars.filter((c) => c.police).length < Math.ceil(wantCops / 2)) {
-      state.cars.push({
-        x: clamp(px + 600, 60, CITY.width - 60),
-        y: clamp(py - 400, 60, CITY.height - 160),
-        angle: 0, type: 1, speed: 0, driver: true, police: true, hp: 100, ramT: 0,
+  const wantCops = sim.heat >= 1 ? Math.min(2 + sim.heat, 6) : 0;
+  lawClock -= dt;
+  if (sim.heat > 0 && lawClock <= 0) {
+    lawClock = 2.5;
+    if (sim.autos.filter((c) => c.patrol).length < Math.ceil(wantCops / 2)) {
+      sim.autos.push({
+        x: bound(px + 600, 60, MAP.width - 60),
+        y: bound(py - 400, 60, MAP.height - 160),
+        angle: 0, kind: 1, velocity: 0, occupied: true, patrol: true, integrity: 100, ramClock: 0,
       });
-    } else if (state.cops.length < wantCops) {
-      state.cops.push({ x: px + 300, y: py + 200, angle: 0, speed: 150, shirt: '#2b4acb', hp: 40 });
+    } else if (sim.officers.length < wantCops) {
+      sim.officers.push({ x: px + 300, y: py + 200, angle: 0, pace: 150, top: '#2b4acb', health: 40 });
     }
   }
-  if (state.wanted === 0) {
-    state.cops = state.cops.filter((c) => dist(c.x, c.y, px, py) > 700);
+  if (sim.heat === 0) {
+    sim.officers = sim.officers.filter((c) => gap(c.x, c.y, px, py) > 700);
   }
-  audio.siren(state.wanted > 0);
-  if (state.wanted === 0) {
-    // No heat: pursuit cars drive off and leave the map once they are far
-    // enough away; they never chase or ram a player who is not wanted.
-    for (const c of state.cars) {
-      if (!c.police) continue;
-      const away = angleTo(px, py, c.x, c.y);
+  sound.alarm(sim.heat > 0);
+  if (sim.heat === 0) {
+    // No heat: pursuit motors drive off and leave the map once they are far
+    // enough away; they never chase or ram a hero who is not wanted.
+    for (const c of sim.autos) {
+      if (!c.patrol) continue;
+      const away = headingTo(px, py, c.x, c.y);
       c.angle = away;
-      c.speed = 220;
-      c.x += Math.cos(away) * c.speed * dt;
-      c.y += Math.sin(away) * c.speed * dt;
+      c.velocity = 220;
+      c.x += Math.cos(away) * c.velocity * dt;
+      c.y += Math.sin(away) * c.velocity * dt;
     }
-    state.cars = state.cars.filter((c) => !c.police || dist(c.x, c.y, px, py) < 800);
+    sim.autos = sim.autos.filter((c) => !c.patrol || gap(c.x, c.y, px, py) < 800);
     return;
   }
-  for (const c of state.cars) {
-    if (!c.police) continue;
-    c.ramT = Math.max(0, (c.ramT || 0) - dt);
-    const a = angleTo(c.x, c.y, px, py);
-    let diff = a - c.angle;
-    while (diff > Math.PI) diff -= 2 * Math.PI;
-    while (diff < -Math.PI) diff += 2 * Math.PI;
-    c.angle += clamp(diff, -2.4 * dt, 2.4 * dt);
-    c.speed = clamp(c.speed + 320 * dt, 0, 300 + state.wanted * 22);
-    c.x += Math.cos(c.angle) * c.speed * dt;
-    c.y += Math.sin(c.angle) * c.speed * dt;
-    if (dist(c.x, c.y, px, py) < 46) {
-      if (state.player.car) {
-        state.player.car.speed *= 0.5;
-        state.shake = 10;
+  for (const c of sim.autos) {
+    if (!c.patrol) continue;
+    c.ramClock = Math.max(0, (c.ramClock || 0) - dt);
+    const a = headingTo(c.x, c.y, px, py);
+    const diff = wrapAngle(a - c.angle);
+    c.angle += bound(diff, -2.4 * dt, 2.4 * dt);
+    c.velocity = bound(c.velocity + 320 * dt, 0, 300 + sim.heat * 22);
+    c.x += Math.cos(c.angle) * c.velocity * dt;
+    c.y += Math.sin(c.angle) * c.velocity * dt;
+    if (gap(c.x, c.y, px, py) < 46) {
+      if (sim.hero.ride) {
+        sim.hero.ride.velocity *= 0.5;
+        sim.jolt = 10;
         // A ram hurts at most once per 0.8 s of contact: without the
-        // cooldown a pinned car loses 240 HP a second and the player is
+        // cooldown a pinned motor loses 240 HP a second and the hero is
         // wasted before they can react.
-        if (c.ramT <= 0) {
-          audio.crash();
-          hitPlayer(4);
-          c.ramT = 0.8;
+        if (c.ramClock <= 0) {
+          sound.smash();
+          hurtHero(4);
+          c.ramClock = 0.8;
         }
       } else {
-        hitPlayer(10 * dt * 6);
+        hurtHero(10 * dt * 6);
       }
-      // Use the player's LIVE position here: hitPlayer may have wasted the
-      // player, which teleports them to the hospital — the pre-ram px/py
-      // would otherwise bust a player who is already 1,900 tiles away.
-      if (screen === SCREEN_PLAY && !state.player.car
-        && dist(c.x, c.y, state.player.x, state.player.y) < 30) busted();
+      // Use the hero's LIVE position here: hurtHero may have wasted the
+      // hero, which teleports them to the hospital — the pre-ram px/py
+      // would otherwise bust a hero who is already 1,900 tiles away.
+      if (view === VIEW_PLAY && !sim.hero.ride
+        && gap(c.x, c.y, sim.hero.x, sim.hero.y) < 30) arrested();
     }
   }
-  for (const cop of state.cops) {
-    if (cop.hp <= 0) {
-      burst(cop.x, cop.y, '#2b4acb', 10);
-      state.cops.splice(state.cops.indexOf(cop), 1);
-      addWanted(1, 'downed a cop');
+  for (const cop of sim.officers) {
+    if (cop.health <= 0) {
+      addSparks(cop.x, cop.y, '#2b4acb', 10);
+      sim.officers.splice(sim.officers.indexOf(cop), 1);
+      raiseHeat(1, 'downed a cop');
       continue;
     }
-    if (state.wanted === 0) continue;
-    const a = angleTo(cop.x, cop.y, px, py);
+    if (sim.heat === 0) continue;
+    const a = headingTo(cop.x, cop.y, px, py);
     cop.angle = a;
-    cop.x += Math.cos(a) * cop.speed * dt;
-    cop.y += Math.sin(a) * cop.speed * dt;
-    if (dist(cop.x, cop.y, px, py) < 26) {
-      if (state.player.car) {
-        // A foot cop cannot arrest a driver.
+    cop.x += Math.cos(a) * cop.pace * dt;
+    cop.y += Math.sin(a) * cop.pace * dt;
+    if (gap(cop.x, cop.y, px, py) < 26) {
+      if (sim.hero.ride) {
+        // A foot officer cannot arrest a driver.
       } else {
-        hitPlayer(14 * dt);
-        if (dist(cop.x, cop.y, px, py) < 20 && state.player.hp < 30) busted();
+        hurtHero(14 * dt);
+        if (gap(cop.x, cop.y, px, py) < 20 && sim.hero.health < 30) arrested();
       }
     }
   }
 }
-function stepBullets(dt) {
-  for (const b of state.bullets) {
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
+function tickShots(dt) {
+  for (const b of sim.shots) {
+    b.x += b.dx * dt;
+    b.y += b.dy * dt;
     b.life -= dt;
-    for (const ped of state.peds) {
-      if (dist(b.x, b.y, ped.x, ped.y) < 16) {
-        ped.scared = 3;
-        ped.fleeX = ped.x + b.vx;
-        ped.fleeY = ped.y + b.vy;
-        burst(ped.x, ped.y, '#e5534b', 8);
+    for (const ped of sim.walkers) {
+      if (gap(b.x, b.y, ped.x, ped.y) < 16) {
+        ped.panic = 3;
+        ped.runX = ped.x + b.dx;
+        ped.runY = ped.y + b.dy;
+        addSparks(ped.x, ped.y, '#e5534b', 8);
         b.life = 0;
-        addWanted(1, 'hit a pedestrian');
+        raiseHeat(1, 'hit a pedestrian');
       }
     }
-    for (const cop of state.cops) {
-      if (dist(b.x, b.y, cop.x, cop.y) < 16) {
-        cop.hp -= 25;
-        burst(b.x, b.y, '#2b4acb', 8);
+    for (const cop of sim.officers) {
+      if (gap(b.x, b.y, cop.x, cop.y) < 16) {
+        cop.health -= 25;
+        addSparks(b.x, b.y, '#2b4acb', 8);
         b.life = 0;
       }
     }
-    for (const c of state.cars) {
-      if (c.police && dist(b.x, b.y, c.x, c.y) < 24) {
-        c.hp -= 20;
-        burst(b.x, b.y, '#888', 6);
+    for (const c of sim.autos) {
+      if (c.patrol && gap(b.x, b.y, c.x, c.y) < 24) {
+        c.integrity -= 20;
+        addSparks(b.x, b.y, '#888', 6);
         b.life = 0;
-        if (c.hp <= 0) {
-          burst(c.x, c.y, '#e5534b', 20);
-          state.cars.splice(state.cars.indexOf(c), 1);
-          addWanted(1, 'destroyed a police car');
+        if (c.integrity <= 0) {
+          addSparks(c.x, c.y, '#e5534b', 20);
+          sim.autos.splice(sim.autos.indexOf(c), 1);
+          raiseHeat(1, 'destroyed a police car');
         }
       }
     }
   }
-  state.bullets = state.bullets.filter((b) => b.life > 0);
-  for (const p of state.particles) {
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
+  sim.shots = sim.shots.filter((b) => b.life > 0);
+  for (const p of sim.sparks) {
+    p.x += p.dx * dt;
+    p.y += p.dy * dt;
     p.life -= dt;
   }
-  state.particles = state.particles.filter((p) => p.life > 0);
-  for (const f of state.floaters) {
+  sim.sparks = sim.sparks.filter((p) => p.life > 0);
+  for (const f of sim.labels) {
     f.y -= 24 * dt;
     f.life -= dt;
   }
-  state.floaters = state.floaters.filter((f) => f.life > 0);
+  sim.labels = sim.labels.filter((f) => f.life > 0);
 }
-function step(dt) {
-  time += dt;
-  state.time = time;
-  state.clock = (9.5 + time / 240) % 24;
-  state.shake = Math.max(0, state.shake - 40 * dt);
-  if (state.mission.dialogueT > 0) state.mission.dialogueT -= dt;
-  if (screen !== SCREEN_PLAY) return;
-  stepPlayer(dt);
-  stepTraffic(dt);
-  stepPeds(dt);
-  stepPolice(dt);
-  stepBullets(dt);
-  stepMission(dt);
-  saveT -= dt;
-  if (saveT <= 0) {
-    saveT = 20;
-    writeSave();
+function tick(dt) {
+  elapsed += dt;
+  sim.elapsed = elapsed;
+  sim.hour = (9.5 + elapsed / 240) % 24;
+  sim.jolt = Math.max(0, sim.jolt - 40 * dt);
+  if (sim.job.speechT > 0) sim.job.speechT -= dt;
+  if (view !== VIEW_PLAY) return;
+  tickHero(dt);
+  tickFlow(dt);
+  tickWalkers(dt);
+  tickLaw(dt);
+  tickShots(dt);
+  tickJob(dt);
+  storeClock -= dt;
+  if (storeClock <= 0) {
+    storeClock = 20;
+    storeSave();
   }
-  // Car-vs-car bumps: both cars slow, hard hits shake the camera.
-  const allCars = state.player.car ? [...state.cars, state.player.car] : state.cars;
-  for (let i = 0; i < allCars.length; i++) {
-    for (let j = i + 1; j < allCars.length; j++) {
-      const a = allCars[i];
-      const b = allCars[j];
-      if (dist(a.x, a.y, b.x, b.y) < 42) {
-        a.speed *= 0.6;
-        b.speed *= 0.6;
-        if (Math.abs(a.speed) > 120 || Math.abs(b.speed) > 120) {
-          audio.crash();
-          state.shake = 8;
+  // Motor-vs-motor bumps: both motors slow, hard hits shake the camera.
+  const allAutos = sim.hero.ride ? [...sim.autos, sim.hero.ride] : sim.autos;
+  for (let i = 0; i < allAutos.length; i++) {
+    for (let j = i + 1; j < allAutos.length; j++) {
+      const a = allAutos[i];
+      const b = allAutos[j];
+      if (gap(a.x, a.y, b.x, b.y) < 42) {
+        a.velocity *= 0.6;
+        b.velocity *= 0.6;
+        if (Math.abs(a.velocity) > 120 || Math.abs(b.velocity) > 120) {
+          sound.smash();
+          sim.jolt = 8;
         }
       }
     }
   }
 }
-function startGame(fresh) {
+function beginPlay(fresh) {
   if (fresh) {
-    state = newState();
-    state.hasSave = !!readSave();
-  } else if (readSave()) {
-    loadSave();
+    sim = freshSim();
+    sim.saved = !!fetchSave();
+  } else if (fetchSave()) {
+    applySave();
   }
-  screen = SCREEN_PLAY;
-  accumulator = 0;
-  if (!state.mission.active || state.mission.active < 0) {
-    const next = MISSIONS.findIndex((m, i) => !state.mission.done.includes(i));
-    if (next >= 0) startMission(state.mission, next);
+  view = VIEW_PLAY;
+  bank = 0;
+  if (!sim.job.current || sim.job.current < 0) {
+    const next = JOBS.findIndex((job, i) => !sim.job.finished.includes(i));
+    if (next >= 0) beginJob(sim.job, next);
   }
-  announce('Playing Solmar. Follow the gold marker.');
+  statusLine('Playing Solmar. Follow the gold marker.');
 }
-function handleActions() {
-  const a = input.takeActions();
-  if (a & ACTION_MUTE) {
-    const m = audio.toggleMute();
-    announce(m ? 'Muted.' : 'Sound on.');
+function drainInputs() {
+  const a = controls.drainKeys();
+  if (a & KEY_SOUND) {
+    const m = sound.flipMute();
+    statusLine(m ? 'Muted.' : 'Sound on.');
   }
-  if (a & ACTION_CONFIRM) {
-    audio.unlock();
-    if (screen === SCREEN_TITLE) startGame(state.hasSave);
-    else if (screen === SCREEN_OVER || screen === SCREEN_BUSTED) startGame(false);
-    else if (screen === SCREEN_PAUSED) screen = SCREEN_PLAY;
+  if (a & KEY_OK) {
+    sound.start();
+    if (view === VIEW_TITLE) beginPlay(sim.saved);
+    else if (view === VIEW_OVER || view === VIEW_BUSTED) beginPlay(false);
+    else if (view === VIEW_PAUSED) view = VIEW_PLAY;
   }
-  if (a & ACTION_PAUSE) {
-    if (screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
+  if (a & KEY_PAUSE) {
+    if (view === VIEW_PLAY) {
+      view = VIEW_PAUSED;
+      statusLine('Paused.');
+    } else if (view === VIEW_PAUSED) {
+      view = VIEW_PLAY;
     }
   }
-  if (screen === SCREEN_PLAY) {
-    if (a & ACTION_ENTER) enterCar();
-    if (a & ACTION_PUNCH) punch();
-    if (input.keys.has('n')) {
-      const next = MISSIONS.findIndex((m, i) => !state.mission.done.includes(i));
-      if (next >= 0 && state.mission.active !== next) {
-        startMission(state.mission, next);
-        audio.jingle();
+  if (view === VIEW_PLAY) {
+    if (a & KEY_USE) useAuto();
+    if (a & KEY_HIT) strike();
+    if (controls.held.has('n')) {
+      const next = JOBS.findIndex((job, i) => !sim.job.finished.includes(i));
+      if (next >= 0 && sim.job.current !== next) {
+        beginJob(sim.job, next);
+        sound.fanfare();
       }
     }
   }
-  if (screen === SCREEN_PLAY && input.takeShoot()) shoot();
+  if (view === VIEW_PLAY && controls.drainShot()) fire();
 }
-function frame(now) {
-  requestAnimationFrame(frame);
-  accumulator += Math.min((now - last) / 1000, 0.25);
-  last = now;
-  handleActions();
-  if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-    while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-      step(STEP);
-      accumulator -= STEP;
+function loop(now) {
+  requestAnimationFrame(loop);
+  bank += Math.min((now - prev) / 1000, 0.25);
+  prev = now;
+  drainInputs();
+  if (view === VIEW_TITLE || view === VIEW_PLAY) {
+    while (bank >= TICK && (view === VIEW_TITLE || view === VIEW_PLAY)) {
+      tick(TICK);
+      bank -= TICK;
     }
   } else {
-    accumulator = 0;
+    bank = 0;
   }
-  renderer.draw(state, screen, best, time);
+  painter.draw(sim, view, record, elapsed);
 }
 // Screenshot staging: one deterministic scene per shot name, drawn twice so
 // the canvas is settled before the driver captures it.
-function stageShot(name) {
-  state = newState();
+function stageScene(name) {
+  sim = freshSim();
   if (name === 'title') {
-    screen = SCREEN_TITLE;
+    view = VIEW_TITLE;
   } else if (name === 'driving') {
-    screen = SCREEN_PLAY;
-    const c = state.cars[0];
-    state.cars.splice(0, 1);
-    state.player.car = c;
+    view = VIEW_PLAY;
+    const c = sim.autos[0];
+    sim.autos.splice(0, 1);
+    sim.hero.ride = c;
     c.x = 1200;
     c.y = 448;
     c.angle = 0;
-    c.speed = 260;
-    state.player.x = c.x;
-    state.player.y = c.y;
-    startMission(state.mission, 0);
-    for (let i = 0; i < 18; i++) step(STEP);
+    c.velocity = 260;
+    sim.hero.x = c.x;
+    sim.hero.y = c.y;
+    beginJob(sim.job, 0);
+    for (let i = 0; i < 18; i++) tick(TICK);
   } else if (name === 'wanted') {
-    screen = SCREEN_PLAY;
-    state.player.x = 1450;
-    state.player.y = 550;
-    state.wanted = 3;
-    state.wantedHeat = 1;
-    state.cops.push({ x: 1560, y: 640, angle: 0, speed: 150, shirt: '#2b4acb', hp: 40 });
-    state.cars.push({
-      x: 1650, y: 448, angle: Math.PI, type: 1, speed: 200,
-      driver: true, police: true, hp: 100,
+    view = VIEW_PLAY;
+    sim.hero.x = 1450;
+    sim.hero.y = 550;
+    sim.heat = 3;
+    sim.heatLevel = 1;
+    sim.officers.push({ x: 1560, y: 640, angle: 0, pace: 150, top: '#2b4acb', health: 40 });
+    sim.autos.push({
+      x: 1650, y: 448, angle: Math.PI, kind: 1, velocity: 200,
+      occupied: true, patrol: true, integrity: 100,
     });
-    // Fleeing pedestrians ring the player, kept off the player's own tile.
-    state.peds.forEach((p, i) => {
-      const a = (i / state.peds.length) * 6.283;
+    // Fleeing walkers ring the hero, kept off the hero's own tile.
+    sim.walkers.forEach((p, i) => {
+      const a = (i / sim.walkers.length) * 6.283;
       const r = 140 + (i % 5) * 55;
       p.x = 1450 + Math.cos(a) * r;
       p.y = 550 + Math.sin(a) * r * 0.7;
-      p.scared = 2;
-      p.fleeX = p.x + Math.cos(a) * 300;
-      p.fleeY = p.y + Math.sin(a) * 300;
+      p.panic = 2;
+      p.runX = p.x + Math.cos(a) * 300;
+      p.runY = p.y + Math.sin(a) * 300;
     });
-    for (let i = 0; i < 20; i++) step(STEP);
+    for (let i = 0; i < 20; i++) tick(TICK);
   } else if (name === 'mission') {
-    screen = SCREEN_PLAY;
-    startMission(state.mission, 4);
-    const c = state.cars[2];
-    state.cars.splice(2, 1);
-    state.player.car = c;
+    view = VIEW_PLAY;
+    beginJob(sim.job, 4);
+    const c = sim.autos[2];
+    sim.autos.splice(2, 1);
+    sim.hero.ride = c;
     c.x = 1800;
     c.y = 448;
     c.angle = 0;
-    c.speed = 200;
-    state.player.x = c.x;
-    state.player.y = c.y;
-    state.mission.timer = 82;
-    for (let i = 0; i < 15; i++) step(STEP);
+    c.velocity = 200;
+    sim.hero.x = c.x;
+    sim.hero.y = c.y;
+    sim.job.countdown = 82;
+    for (let i = 0; i < 15; i++) tick(TICK);
   }
-  renderer.draw(state, screen, best, time);
-  renderer.draw(state, screen, best, time);
+  painter.draw(sim, view, record, elapsed);
+  painter.draw(sim, view, record, elapsed);
   window.__shotReady = true;
 }
 window.__solmar = {
-  get state() { return state; },
-  get screen() { return screen; },
+  get state() { return sim; },
+  get screen() { return view; },
   start(fresh) {
-    audio.unlock();
-    startGame(fresh);
+    sound.start();
+    beginPlay(fresh);
   },
-  enterCar,
-  shoot,
-  punch,
-  addWanted,
-  startMission: (i) => startMission(state.mission, i),
-  input,
+  enterCar: useAuto,
+  shoot: fire,
+  punch: strike,
+  addWanted: raiseHeat,
+  startMission: (i) => beginJob(sim.job, i),
+  input: controls,
   setWanted(n) {
-    state.wanted = n;
-    state.wantedHeat = 1;
+    sim.heat = n;
+    sim.heatLevel = 1;
   },
   teleport(x, y) {
-    state.player.x = x;
-    state.player.y = y;
-    if (state.player.car) {
-      state.player.car.x = x;
-      state.player.car.y = y;
+    sim.hero.x = x;
+    sim.hero.y = y;
+    if (sim.hero.ride) {
+      sim.hero.ride.x = x;
+      sim.hero.ride.y = y;
     }
   },
 };
-if (shot) stageShot(shot);
-else requestAnimationFrame(frame);
+if (shot) stageScene(shot);
+else requestAnimationFrame(loop);

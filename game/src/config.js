@@ -1,16 +1,16 @@
-// Solmar City tuning. Everything here is original: a fictional coastal
-// city, its districts, cars and palette. No names, art or numbers come
-// from any commercial game.
-export const CITY = {
+// Solmar City balance sheet. A made-up harbour town: its quarters, its
+// motors and its colours are invented here and belong to no other game.
+// Numbers are the game's feel — change one and the drive changes with it.
+export const MAP = {
   width: 3200,
   height: 2400,
   road: 96,
   block: 304,
 };
-export const STEP = 1 / 60;
-export const SAVE_KEY = 'solmar.save.v1';
-export const SEED = 20261117;
-export const PLAYER = {
+export const TICK = 1 / 60;
+export const SAVE_SLOT = 'solmar.save.v1';
+export const WORLD_SEED = 20261117;
+export const HERO = {
   radius: 14,
   walk: 170,
   run: 290,
@@ -18,7 +18,7 @@ export const PLAYER = {
   punch: 18,
   punchRange: 34,
 };
-export const CAR_TYPES = [
+export const VEHICLES = [
   { name: 'Civic', top: 330, accel: 260, turn: 2.9, color: '#e8b23a' },
   { name: 'Sedan', top: 300, accel: 230, turn: 2.6, color: '#4f8fd0' },
   { name: 'Coupe', top: 380, accel: 300, turn: 3.1, color: '#d05454' },
@@ -26,7 +26,7 @@ export const CAR_TYPES = [
   { name: 'Taxi', top: 320, accel: 250, turn: 2.8, color: '#f2c94c' },
   { name: 'Sport', top: 430, accel: 340, turn: 3.3, color: '#7b5fd0' },
 ];
-export const DISTRICTS = [
+export const QUARTERS = [
   { name: 'Old Town', x: 0, y: 0, w: 1100, h: 800, tint: '#c9a86a' },
   { name: 'Marina Bay', x: 1100, y: 0, w: 1000, h: 800, tint: '#5fb8c9' },
   { name: 'Downtown', x: 2100, y: 0, w: 1100, h: 800, tint: '#8fa3c9' },
@@ -36,7 +36,7 @@ export const DISTRICTS = [
   { name: 'Beachfront', x: 0, y: 1600, w: 1600, h: 800, tint: '#e8d27a' },
   { name: 'South Docks', x: 1600, y: 1600, w: 1600, h: 800, tint: '#9a8a7a' },
 ];
-export const PALETTE = {
+export const COLORS = {
   grass: '#5d8a4a',
   road: '#33373d',
   roadLine: '#c9c27a',
@@ -53,7 +53,7 @@ export const PALETTE = {
   gold: '#f2c94c',
   red: '#e5534b',
 };
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-// Stars shed per second while no police unit can see the player.
-export const WANTED_DECAY = 0.045;
-export const MISSION_REWARDS = [250, 400, 600, 800, 1000, 1500];
+export const TYPEFACE = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+// Heat fades a little each second while no officer has eyes on the player.
+export const HEAT_FADE = 0.045;
+export const JOB_PAYOUTS = [250, 400, 600, 800, 1000, 1500];

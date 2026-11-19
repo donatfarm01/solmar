@@ -1,129 +1,129 @@
-// Every sound is synthesized live with WebAudio: no audio files, no
-// samples. A small chiptune loop (bass, lead, hats) plus one-shot effects
-// for gunfire, punches, pickups, crashes, the mission jingle, the busted
-// sting, a looping engine hum and a two-tone siren.
-export function createAudio() {
-  let ctx = null;
-  let master = null;
-  let musicBus = null;
-  let muted = false;
-  let musicTimer = null;
-  let step = 0;
-  let engineOsc = null;
-  let engineGain = null;
-  let sirenOsc = null;
-  let sirenGain = null;
-  const bassLine = [55, 0, 55, 0, 65.4, 0, 49, 0, 55, 0, 55, 0, 73.4, 65.4, 49, 0];
-  const leadLine = [220, 261.6, 329.6, 261.6, 220, 0, 196, 246.9, 220, 261.6, 392, 329.6, 293.7, 261.6, 220, 0];
-  function ensure() {
-    if (ctx) return true;
+// Every noise is built live with WebAudio: no sound files, no samples.
+// A small chiptune loop (bass, lead, hats) plus one-shot effects for
+// gunfire, punches, pickups, crashes, the job jingle, the busted sting,
+// a looping motor drone and a two-tone alarm.
+export function makeSound() {
+  let ac = null;
+  let mainBus = null;
+  let tuneBus = null;
+  let silent = false;
+  let tuneClock = null;
+  let beat = 0;
+  let motorOsc = null;
+  let motorGain = null;
+  let alarmOsc = null;
+  let alarmGain = null;
+  const bassNotes = [55, 0, 55, 0, 65.4, 0, 49, 0, 55, 0, 55, 0, 73.4, 65.4, 49, 0];
+  const leadNotes = [220, 261.6, 329.6, 261.6, 220, 0, 196, 246.9, 220, 261.6, 392, 329.6, 293.7, 261.6, 220, 0];
+  function setup() {
+    if (ac) return true;
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      ctx = new AC();
-      master = ctx.createGain();
-      master.gain.value = 0.5;
-      master.connect(ctx.destination);
-      musicBus = ctx.createGain();
-      musicBus.gain.value = 0.16;
-      musicBus.connect(master);
-      engineOsc = ctx.createOscillator();
-      engineOsc.type = 'sawtooth';
-      engineOsc.frequency.value = 55;
-      engineGain = ctx.createGain();
-      engineGain.gain.value = 0;
-      engineOsc.connect(engineGain);
-      engineGain.connect(master);
-      engineOsc.start();
-      sirenOsc = ctx.createOscillator();
-      sirenOsc.type = 'sine';
-      sirenOsc.frequency.value = 700;
-      sirenGain = ctx.createGain();
-      sirenGain.gain.value = 0;
-      sirenOsc.connect(sirenGain);
-      sirenGain.connect(master);
-      sirenOsc.start();
+      ac = new AC();
+      mainBus = ac.createGain();
+      mainBus.gain.value = 0.5;
+      mainBus.connect(ac.destination);
+      tuneBus = ac.createGain();
+      tuneBus.gain.value = 0.16;
+      tuneBus.connect(mainBus);
+      motorOsc = ac.createOscillator();
+      motorOsc.type = 'sawtooth';
+      motorOsc.frequency.value = 55;
+      motorGain = ac.createGain();
+      motorGain.gain.value = 0;
+      motorOsc.connect(motorGain);
+      motorGain.connect(mainBus);
+      motorOsc.start();
+      alarmOsc = ac.createOscillator();
+      alarmOsc.type = 'sine';
+      alarmOsc.frequency.value = 700;
+      alarmGain = ac.createGain();
+      alarmGain.gain.value = 0;
+      alarmOsc.connect(alarmGain);
+      alarmGain.connect(mainBus);
+      alarmOsc.start();
       return true;
     } catch {
       return false;
     }
   }
-  // A short synthesized blip on the master bus, optionally sliding in pitch.
-  function tone(freq, dur, type, vol, when = 0, slideTo = 0) {
-    if (!ensure() || muted) return;
-    const t0 = ctx.currentTime + when;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
+  // One short synthesized blip on the main bus, sliding in pitch if asked.
+  function blip(freq, dur, type, vol, when = 0, slideTo = 0) {
+    if (!setup() || silent) return;
+    const t0 = ac.currentTime + when;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, t0);
     if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(20, slideTo), t0 + dur);
     g.gain.setValueAtTime(vol, t0);
     g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
     o.connect(g);
-    g.connect(master);
+    g.connect(mainBus);
     o.start(t0);
     o.stop(t0 + dur + 0.02);
   }
-  // One music note on the music bus.
-  function note(freq, dur, type, vol) {
-    if (!ensure() || muted || !musicBus) return;
-    const t0 = ctx.currentTime;
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
+  // One music note on the tune bus.
+  function playNote(freq, dur, type, vol) {
+    if (!setup() || silent || !tuneBus) return;
+    const t0 = ac.currentTime;
+    const o = ac.createOscillator();
+    const g = ac.createGain();
     o.type = type;
     o.frequency.value = freq;
     g.gain.setValueAtTime(vol, t0);
     g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
     o.connect(g);
-    g.connect(musicBus);
+    g.connect(tuneBus);
     o.start(t0);
     o.stop(t0 + dur);
   }
-  function startMusic() {
-    if (!ensure() || musicTimer) return;
-    musicTimer = setInterval(() => {
-      if (muted) return;
-      const b = bassLine[step % bassLine.length];
-      const l = leadLine[step % leadLine.length];
-      if (b) note(b, 0.22, 'triangle', 0.5);
-      if (l && step % 2 === 0) note(l, 0.2, 'square', 0.16);
-      if (step % 4 === 2) note(1200, 0.03, 'square', 0.05);
-      step += 1;
+  function startTune() {
+    if (!setup() || tuneClock) return;
+    tuneClock = setInterval(() => {
+      if (silent) return;
+      const b = bassNotes[beat % bassNotes.length];
+      const l = leadNotes[beat % leadNotes.length];
+      if (b) playNote(b, 0.22, 'triangle', 0.5);
+      if (l && beat % 2 === 0) playNote(l, 0.2, 'square', 0.16);
+      if (beat % 4 === 2) playNote(1200, 0.03, 'square', 0.05);
+      beat += 1;
     }, 170);
   }
   return {
-    unlock() {
-      if (ensure() && ctx.state === 'suspended') ctx.resume();
-      startMusic();
+    start() {
+      if (setup() && ac.state === 'suspended') ac.resume();
+      startTune();
     },
-    toggleMute() {
-      muted = !muted;
-      if (master) master.gain.value = muted ? 0 : 0.5;
-      return muted;
+    flipMute() {
+      silent = !silent;
+      if (mainBus) mainBus.gain.value = silent ? 0 : 0.5;
+      return silent;
     },
-    get muted() { return muted; },
-    shoot() {
-      tone(900, 0.09, 'square', 0.25, 0, 120);
-      tone(180, 0.06, 'sawtooth', 0.18, 0, 60);
+    get silent() { return silent; },
+    gunshot() {
+      blip(900, 0.09, 'square', 0.25, 0, 120);
+      blip(180, 0.06, 'sawtooth', 0.18, 0, 60);
     },
-    punch() { tone(160, 0.08, 'sine', 0.3, 0, 70); },
-    pickup() {
-      tone(660, 0.09, 'sine', 0.25);
-      tone(990, 0.14, 'sine', 0.25, 0.08);
+    thump() { blip(160, 0.08, 'sine', 0.3, 0, 70); },
+    collect() {
+      blip(660, 0.09, 'sine', 0.25);
+      blip(990, 0.14, 'sine', 0.25, 0.08);
     },
-    crash() {
-      tone(120, 0.25, 'sawtooth', 0.35, 0, 40);
-      tone(70, 0.2, 'square', 0.2, 0, 35);
+    smash() {
+      blip(120, 0.25, 'sawtooth', 0.35, 0, 40);
+      blip(70, 0.2, 'square', 0.2, 0, 35);
     },
-    jingle() { [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.18, 'triangle', 0.3, i * 0.11)); },
-    busted() { [392, 370, 349, 311].forEach((f, i) => tone(f, 0.3, 'sawtooth', 0.22, i * 0.22)); },
-    siren(on) {
-      if (sirenGain && ctx) sirenGain.gain.setTargetAtTime(on && !muted ? 0.035 : 0, ctx.currentTime, 0.2);
-      if (sirenOsc && ctx && on) sirenOsc.frequency.setTargetAtTime(750 + 250 * Math.sin(Date.now() / 350), ctx.currentTime, 0.1);
+    fanfare() { [523, 659, 784, 1046].forEach((f, i) => blip(f, 0.18, 'triangle', 0.3, i * 0.11)); },
+    caught() { [392, 370, 349, 311].forEach((f, i) => blip(f, 0.3, 'sawtooth', 0.22, i * 0.22)); },
+    alarm(on) {
+      if (alarmGain && ac) alarmGain.gain.setTargetAtTime(on && !silent ? 0.035 : 0, ac.currentTime, 0.2);
+      if (alarmOsc && ac && on) alarmOsc.frequency.setTargetAtTime(750 + 250 * Math.sin(Date.now() / 350), ac.currentTime, 0.1);
     },
-    engine(speed01) {
-      if (engineGain && ctx) {
-        engineGain.gain.setTargetAtTime(muted ? 0 : speed01 * 0.05, ctx.currentTime, 0.1);
-        engineOsc.frequency.setTargetAtTime(50 + speed01 * 140, ctx.currentTime, 0.1);
+    motor(speed01) {
+      if (motorGain && ac) {
+        motorGain.gain.setTargetAtTime(silent ? 0 : speed01 * 0.05, ac.currentTime, 0.1);
+        motorOsc.frequency.setTargetAtTime(50 + speed01 * 140, ac.currentTime, 0.1);
       }
     },
   };
