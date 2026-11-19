@@ -520,7 +520,7 @@ function stepPolice(dt) {
       state.cars.push({
         x: clamp(px + 600, 60, CITY.width - 60),
         y: clamp(py - 400, 60, CITY.height - 160),
-        angle: 0, type: 1, speed: 0, driver: true, police: true, hp: 100,
+        angle: 0, type: 1, speed: 0, driver: true, police: true, hp: 100, ramT: 0,
       });
     } else if (state.cops.length < wantCops) {
       state.cops.push({ x: px + 300, y: py + 200, angle: 0, speed: 150, shirt: '#2b4acb', hp: 40 });
@@ -530,8 +530,23 @@ function stepPolice(dt) {
     state.cops = state.cops.filter((c) => dist(c.x, c.y, px, py) > 700);
   }
   audio.siren(state.wanted > 0);
+  if (state.wanted === 0) {
+    // No heat: pursuit cars drive off and leave the map once they are far
+    // enough away; they never chase or ram a player who is not wanted.
+    for (const c of state.cars) {
+      if (!c.police) continue;
+      const away = angleTo(px, py, c.x, c.y);
+      c.angle = away;
+      c.speed = 220;
+      c.x += Math.cos(away) * c.speed * dt;
+      c.y += Math.sin(away) * c.speed * dt;
+    }
+    state.cars = state.cars.filter((c) => !c.police || dist(c.x, c.y, px, py) < 800);
+    return;
+  }
   for (const c of state.cars) {
     if (!c.police) continue;
+    c.ramT = Math.max(0, (c.ramT || 0) - dt);
     const a = angleTo(c.x, c.y, px, py);
     let diff = a - c.angle;
     while (diff > Math.PI) diff -= 2 * Math.PI;
@@ -544,15 +559,32 @@ function stepPolice(dt) {
       if (state.player.car) {
         state.player.car.speed *= 0.5;
         state.shake = 10;
-        audio.crash();
-        hitPlayer(4);
+        // A ram hurts at most once per 0.8 s of contact: without the
+        // cooldown a pinned car loses 240 HP a second and the player is
+        // wasted before they can react.
+        if (c.ramT <= 0) {
+          audio.crash();
+          hitPlayer(4);
+          c.ramT = 0.8;
+        }
       } else {
         hitPlayer(10 * dt * 6);
       }
-      if (!state.player.car && dist(c.x, c.y, px, py) < 30) busted();
+      // Use the player's LIVE position here: hitPlayer may have wasted the
+      // player, which teleports them to the hospital — the pre-ram px/py
+      // would otherwise bust a player who is already 1,900 tiles away.
+      if (screen === SCREEN_PLAY && !state.player.car
+        && dist(c.x, c.y, state.player.x, state.player.y) < 30) busted();
     }
   }
   for (const cop of state.cops) {
+    if (cop.hp <= 0) {
+      burst(cop.x, cop.y, '#2b4acb', 10);
+      state.cops.splice(state.cops.indexOf(cop), 1);
+      addWanted(1, 'downed a cop');
+      continue;
+    }
+    if (state.wanted === 0) continue;
     const a = angleTo(cop.x, cop.y, px, py);
     cop.angle = a;
     cop.x += Math.cos(a) * cop.speed * dt;
@@ -564,11 +596,6 @@ function stepPolice(dt) {
         hitPlayer(14 * dt);
         if (dist(cop.x, cop.y, px, py) < 20 && state.player.hp < 30) busted();
       }
-    }
-    if (cop.hp <= 0) {
-      burst(cop.x, cop.y, '#2b4acb', 10);
-      state.cops.splice(state.cops.indexOf(cop), 1);
-      addWanted(1, 'downed a cop');
     }
   }
 }
