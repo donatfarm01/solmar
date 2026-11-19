@@ -73,6 +73,49 @@ export const JOBS = [
       { type: 'escape', text: 'Run to Beachfront with the ledger', x: 700, y: 2250, needsRide: false },
     ],
   },
+  {
+    num: 6,
+    pay: 700,
+    tag: 'Timed sprint',
+    name: 'Storm Run',
+    client: 'Marla Voss',
+    intro: 'A storm is rolling over Solmar and Marla’ courier never showed. Run her parcels across town before the rain drowns the night.',
+    stages: [
+      { x: 448, y: 448, type: 'timed', text: 'Marker 1 — Palm Park, fast', limit: 120, needsRide: true },
+      { type: 'timed', text: 'Marker 2 — Harbour Heights', x: 2048, y: 848, needsRide: true, limit: 0, hint: 'Cut through Market Row' },
+      { text: 'Marker 3 — South Docks', type: 'timed', x: 2848, y: 1648, needsRide: false, limit: 0 },
+      { type: 'timed', text: 'Marker 4 — Beachfront road', x: 1248, y: 2048, needsRide: false, limit: 0 },
+      { text: 'Marker 5 — Marina Bay', type: 'timed', x: 1450, y: 250, needsRide: false, limit: 0 },
+    ],
+  },
+  {
+    client: 'Rico the Mechanic',
+    num: 7,
+    name: 'The Bike Job',
+    pay: 1200,
+    tag: 'Two wheels',
+    intro: 'Rico has a buyer for a fast bike — light, loud, gone in a blink. Lift one off the street and ride it down to his shop.',
+    stages: [
+      { type: 'steal', text: 'Lift a bike (stand close and press E)', x: 0, y: 0, needsRide: true, bikeOnly: true },
+      { needsRide: true, type: 'goto', text: 'Bring the bike to Rico’ workshop', x: 2400, y: 1950 },
+      { type: 'goto', text: 'Pick up Rico’ payment at Marina Bay', x: 1450, y: 250, needsRide: false },
+      { x: 450, y: 550, type: 'goto', text: 'Report back to Marla in Old Town', needsRide: false },
+    ],
+  },
+  {
+    num: 8,
+    name: 'Harbour Storm',
+    pay: 1800,
+    client: 'Marla Voss',
+    brief: 'Ledger, law, lightning: the harbour crew stashed a book in the South Docks.',
+    intro: 'The harbour crew stashed a ledger in the South Docks. Take it, draw the law off your tail, and vanish into the Beachfront rain.',
+    stages: [
+      { x: 1648, y: 1248, type: 'goto', text: 'Meet the harbour contact first', needsRide: false },
+      { type: 'goto', text: 'Lift the storm ledger in the South Docks', x: 2848, y: 2048, needsRide: false },
+      { type: 'wanted', text: 'Draw heat, then shake the cops', x: 0, y: 0, needsRide: false },
+      { x: 700, y: 2250, type: 'escape', text: 'Run to Beachfront with the ledger', needsRide: false },
+    ],
+  },
 ];
 export function freshJobState() {
   return { current: -1, stage: 0, countdown: 0, finished: [], speech: '', speechT: 0 };

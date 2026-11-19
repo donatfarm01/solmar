@@ -8,6 +8,8 @@ import { MAP, TICK, SAVE_SLOT, WORLD_SEED, HERO, VEHICLES, HEAT_FADE } from './c
 import { makeRng, bound, gap, headingTo } from './random.js';
 import { buildTown, hitsStructure, spawnWalkers, spawnDrivers, closestStreetPoint } from './world.js';
 import { JOBS, freshJobState, beginJob } from './missions.js';
+import { makeWeather } from './weather.js';
+import { makePackages, stepPackages } from './packages.js';
 import { makeSound } from './audio.js';
 import { makeControls, KEY_OK, KEY_PAUSE, KEY_USE, KEY_HIT, KEY_SOUND } from './input.js';
 import { makePainter, VIEW_TITLE, VIEW_PLAY, VIEW_PAUSED, VIEW_OVER, VIEW_BUSTED } from './render.js';
@@ -26,6 +28,8 @@ function freshSim() {
   const town = buildTown(makeRng(seed));
   const autos = town.parked.map((c) => ({ ...c, integrity: 100 }));
   for (const c of spawnDrivers(makeRng(seed + 7), 14)) autos.push({ ...c, integrity: 100 });
+  autos[3].kind = 6;
+  for (const c of autos) if (c.kind === 6) c.integrity = 60;
   return {
     town,
     autos,
@@ -47,6 +51,9 @@ function freshSim() {
     record: 0,
     takedowns: 0,
     thefts: 0,
+    topSpeed: 0,
+    weather: makeWeather(makeRng(seed + 91)),
+    packs: makePackages(makeRng(seed + 57)),
   };
 }
 let sim = freshSim();
@@ -310,7 +317,7 @@ function tickJob(dt) {
     }
   }
   if (stage.type === 'steal') {
-    if (sim.hero.ride) {
+    if (sim.hero.ride && (!stage.bikeOnly || sim.hero.ride.kind === 6)) {
       js.stage += 1;
       js.speech = 'Rico: That\'s the one. Now bring it down to my shop.';
       js.speechT = 5;
@@ -318,8 +325,8 @@ function tickJob(dt) {
     return;
   }
   if (stage.type === 'wanted') {
-    if (sim.heat >= 2 && js.stage === 0) {
-      js.stage = 1;
+    if (sim.heat >= 2) {
+      js.stage += 1;
       js.speech = 'Marla Voss: Now shake them and reach the hideout.';
       js.speechT = 5;
     }
@@ -352,13 +359,14 @@ function driveRide(dt) {
   const h = sim.hero;
   const c = h.ride;
   const spec = VEHICLES[c.kind];
+  const grip = sim.weather.grip();
   const fwd = controls.held.has('w') || controls.held.has('arrowup');
   const back = controls.held.has('s') || controls.held.has('arrowdown');
   const steer = (controls.held.has('a') || controls.held.has('arrowleft') ? -1 : 0)
     + (controls.held.has('d') || controls.held.has('arrowright') ? 1 : 0);
-  if (fwd) c.velocity += spec.accel * dt;
-  if (back) c.velocity -= spec.accel * 0.8 * dt;
-  c.velocity = bound(c.velocity, -spec.top * 0.45, spec.top);
+  if (fwd) c.velocity += spec.accel * grip * dt;
+  if (back) c.velocity -= spec.accel * 0.8 * grip * dt;
+  c.velocity = bound(c.velocity, -spec.top * 0.45 * grip, spec.top * grip);
   if (!fwd && !back) c.velocity *= Math.pow(0.4, dt);
   const going = c.velocity >= 0 ? 1 : -1;
   c.angle += steer * spec.turn * dt * going * Math.min(1, Math.abs(c.velocity) / 120);
@@ -668,6 +676,16 @@ function tick(dt) {
   tickLaw(dt);
   tickShots(dt);
   tickJob(dt);
+  sim.weather.advance(dt);
+  if (sim.hero.ride) {
+    const pace = Math.abs(sim.hero.ride.velocity);
+    if (pace > sim.topSpeed) sim.topSpeed = pace;
+  }
+  const stash = stepPackages(sim);
+  if (stash) {
+    sound.collect();
+    addLabel(stash.spot.x, stash.spot.y - 30, `+$${stash.amount} — hidden stash ${stash.spot.id + 1}/12`, '#f2c94c');
+  }
   storeClock -= dt;
   if (storeClock <= 0) {
     storeClock = 20;
@@ -770,6 +788,7 @@ function stageScene(name) {
     c.velocity = 260;
     sim.hero.x = c.x;
     sim.hero.y = c.y;
+    if (params.get('wx') === 'rain') sim.weather.force(2);
     beginJob(sim.job, 0);
     for (let i = 0; i < 18; i++) tick(TICK);
   } else if (name === 'wanted') {
@@ -830,6 +849,7 @@ window.__solmar = {
     sim.heat = n;
     sim.heatLevel = 1;
   },
+  setWeather(mode) { sim.weather.force(mode); },
   teleport(x, y) {
     sim.hero.x = x;
     sim.hero.y = y;

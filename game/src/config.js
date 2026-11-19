@@ -25,6 +25,7 @@ export const VEHICLES = [
   { name: 'Van', top: 250, accel: 190, turn: 2.2, color: '#8a8f98' },
   { name: 'Taxi', top: 320, accel: 250, turn: 2.8, color: '#f2c94c' },
   { name: 'Sport', top: 430, accel: 340, turn: 3.3, color: '#7b5fd0' },
+  { name: 'Bike', top: 470, accel: 430, turn: 3.9, color: '#c94f7c' },
 ];
 export const QUARTERS = [
   { name: 'Old Town', x: 0, y: 0, w: 1100, h: 800, tint: '#c9a86a' },

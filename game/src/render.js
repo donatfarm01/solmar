@@ -4,6 +4,9 @@
 import { MAP, VEHICLES, QUARTERS, COLORS, TYPEFACE } from './config.js';
 import { streetGrid, quarterAt } from './world.js';
 import { JOBS, jobObjective } from './missions.js';
+import { statRows } from './stats.js';
+import { skyName } from './weather.js';
+import { nearestStash } from './packages.js';
 
 export const VIEW_TITLE = 0;
 export const VIEW_PLAY = 1;
@@ -36,6 +39,11 @@ export function makePainter(canvas) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(angle);
+    if (kind === 6) {
+      paintBike(color);
+      ctx.restore();
+      return;
+    }
     const body = patrol ? '#e8e8e8' : color;
     const cabin = patrol ? '#2b4acb' : 'rgba(20,30,40,0.85)';
     const panels = [
@@ -58,6 +66,36 @@ export function makePainter(canvas) {
     }
     ctx.restore();
   }
+  function paintBike(color) {
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(0, 2, 20, 7, 0, 0, 6.29);
+    ctx.fill();
+    ctx.fillStyle = '#1c1f24';
+    disc(-13, 0, 6);
+    disc(13, 0, 6);
+    ctx.fillStyle = '#c8ccd2';
+    disc(-13, 0, 2.5);
+    disc(13, 0, 2.5);
+    ctx.strokeStyle = '#c8ccd2';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-13, -6);
+    ctx.lineTo(-13, 6);
+    ctx.moveTo(13, -6);
+    ctx.lineTo(13, 6);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    rect(-16, -3, 32, 6);
+    ctx.fillStyle = 'rgba(20,30,40,0.9)';
+    rect(-4, -4, 10, 8);
+    ctx.fillStyle = '#ffd23a';
+    rect(15, -2, 3, 4);
+    ctx.fillStyle = '#e5534b';
+    rect(-17, -2, 2, 4);
+    ctx.fillStyle = '#2f9e44';
+    disc(2, 0, 4);
+  }
   function paintWalker(x, y, angle, top, panic) {
     ctx.save();
     ctx.translate(x, y);
@@ -76,6 +114,90 @@ export function makePainter(canvas) {
       say('!', -4, -16);
     }
     ctx.restore();
+  }
+  function paintStashes(s, time) {
+    const near = nearestStash(s);
+    if (near) {
+      const beam = near.spot;
+      ctx.fillStyle = 'rgba(242, 201, 76, 0.10)';
+      rect(beam.x - 6, beam.y - 260, 12, 260);
+    }
+    for (const spot of s.packs.list) {
+      if (spot.taken) continue;
+      const bob = Math.sin(time * 3 + spot.id * 1.7) * 3;
+      ctx.fillStyle = 'rgba(242, 201, 76, 0.25)';
+      disc(spot.x, spot.y + bob, 20);
+      ctx.fillStyle = '#f2c94c';
+      ctx.beginPath();
+      ctx.moveTo(spot.x, spot.y + bob - 12);
+      ctx.lineTo(spot.x + 9, spot.y + bob);
+      ctx.lineTo(spot.x, spot.y + bob + 12);
+      ctx.lineTo(spot.x - 9, spot.y + bob);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#1a1a1a';
+      ctx.font = 'bold 13px ' + TYPEFACE;
+      say('$', spot.x - 4, spot.y + bob + 5);
+      ctx.save();
+      ctx.translate(spot.x, spot.y + bob);
+      ctx.rotate(time * 2 + spot.id);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      rect(-1, -7, 2, 14);
+      rect(-7, -1, 14, 2);
+      ctx.restore();
+    }
+  }
+  function paintSky(s) {
+    const w = s.weather;
+    if (w.wet > 0.05) {
+      ctx.fillStyle = 'rgba(8, 14, 26, ' + (0.14 * w.wet) + ')';
+      rect(0, 0, vw, vh);
+    }
+    if (w.wet > 0.02) {
+      const count = Math.floor(w.drops.length * w.wet);
+      ctx.strokeStyle = 'rgba(174, 194, 224, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let k = 0; k < count; k++) {
+        const d = w.drops[k];
+        const x = d.fx * vw;
+        const y = d.fy * vh;
+        const len = d.fl * vh;
+        ctx.moveTo(x, y);
+        ctx.lineTo(x - len * 0.12, y + len);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(174, 194, 224, 0.35)';
+      for (let k = 0; k < count; k++) {
+        const d = w.drops[k];
+        if (d.fy < 0.92) continue;
+        ctx.beginPath();
+        ctx.ellipse(d.fx * vw, d.fy * vh, 7, 2.5, 0, 0, 6.29);
+        ctx.stroke();
+      }
+    }
+    if (w.flash > 0) {
+      ctx.fillStyle = 'rgba(255, 255, 240, ' + (w.flash * 0.16) + ')';
+      rect(0, 0, vw, vh);
+    }
+    ctx.fillStyle = 'rgba(10,14,20,0.65)';
+    rect(vw - 404, 188, 380, 96);
+    ctx.fillStyle = '#f2f0e8';
+    ctx.font = '16px ' + TYPEFACE;
+    ctx.textAlign = 'right';
+    say(skyName(w.mode) + '  ·  Stashes ' + s.packs.found + '/' + s.packs.total, vw - 24, 200);
+    const near = nearestStash(s);
+    if (near) {
+      say('Nearest stash ' + Math.round(near.dist) + 'm ' + near.dir, vw - 24, 224);
+    }
+    const next = w.forecast();
+    say('Next: ' + skyName(next.mode) + ' in ' + Math.ceil(next.seconds) + 's', vw - 24, 248);
+    if (w.mode !== 0) {
+      ctx.fillStyle = '#b8b4a8';
+      say(w.tip(), vw - 24, 272);
+      ctx.fillStyle = '#f2f0e8';
+    }
+    ctx.textAlign = 'left';
   }
   function paintTown(s, cam, time) {
     const { upright, crosswise } = streetGrid();
@@ -298,7 +420,7 @@ export function makePainter(canvas) {
     rect(12, 128, 330, 56);
     ctx.fillStyle = '#fff';
     ctx.font = 'bold 16px ' + TYPEFACE;
-    say(`${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}  ${s.job.finished.length}/6 jobs done`, 24, 152);
+    say(String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0') + '  ' + s.job.finished.length + '/' + JOBS.length + ' jobs done', 24, 152);
     ctx.font = '14px ' + TYPEFACE;
     ctx.fillStyle = COLORS.gold;
     say(jobObjective(s.job).slice(0, 52), 24, 174);
@@ -361,7 +483,7 @@ export function makePainter(canvas) {
       ctx.fillStyle = '#b8b4a8';
       ctx.font = '16px ' + TYPEFACE;
       say('WASD move · E enter/exit car · Mouse aim, Click shoot · F punch · Shift run · M mute', vw / 2, vh / 2 + 96);
-      say(`Best cash: $${record.toLocaleString('en-US')} · 6 story jobs · Heat 0–5 stars · Free roam`, vw / 2, vh / 2 + 122);
+      say('Best cash: $' + record.toLocaleString('en-US') + ' · 9 story jobs · Heat 0–5 stars · Free roam', vw / 2, vh / 2 + 122);
       if (s.saved) say('Continue loads your saved jobs, cash and progress.', vw / 2, vh / 2 + 148);
     } else if (view === VIEW_OVER) {
       ctx.fillStyle = '#e5534b';
@@ -382,9 +504,13 @@ export function makePainter(canvas) {
       ctx.font = 'bold 40px ' + TYPEFACE;
       say('PAUSED', vw / 2, vh / 2 + 60);
       ctx.font = '18px ' + TYPEFACE;
-      say('Esc / Enter to resume · M mute · Jobs: ' + (s.job.finished.length) + '/6 done', vw / 2, vh / 2 + 100);
-      say('Job list:', vw / 2, vh / 2 + 140);
-      JOBS.forEach((job, i) => say(`${s.job.finished.includes(i) ? '✓' : '·'} ${i + 1}. ${job.name} — $${job.pay}`, vw / 2, vh / 2 + 168 + i * 24));
+      say('Esc / Enter to resume · M mute · Jobs: ' + s.job.finished.length + '/' + JOBS.length + ' done', vw / 2, vh / 2 + 100);
+      ctx.font = 'bold 20px ' + TYPEFACE;
+      say('Job list:', vw / 2 - 300, vh / 2 + 140);
+      say('Run stats:', vw / 2 + 300, vh / 2 + 140);
+      ctx.font = '16px ' + TYPEFACE;
+      JOBS.forEach((job, i) => say(`${s.job.finished.includes(i) ? '✓' : '·'} ${i + 1}. ${job.name} — $${job.pay}`, vw / 2 - 300, vh / 2 + 168 + i * 19));
+      statRows(s, record).forEach((row, i) => say(row[0] + ': ' + row[1], vw / 2 + 300, vh / 2 + 168 + i * 19));
     }
     ctx.textAlign = 'left';
   }
@@ -406,7 +532,9 @@ export function makePainter(canvas) {
       ctx.save();
       ctx.translate(vw / 2 - camX, vh / 2 - camY);
       paintTown(s, { x: camX, y: camY }, time);
+      paintStashes(s, time);
       ctx.restore();
+      paintSky(s);
       if (view === VIEW_PAUSED) {
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
         rect(0, 0, vw, vh);
